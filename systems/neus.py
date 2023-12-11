@@ -248,7 +248,7 @@ class NeuSSystem(BaseSystem):
         )
         W, H = self.dataset.img_wh
         self.save_image_grid(
-            f"it{self.global_step}-test/{batch['index'][0].item()}.png",
+            f"it{self.global_step}-test/{batch['index'][0]}.png",
             [
                 {
                     "type": "rgb",
