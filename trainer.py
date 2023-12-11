@@ -2,6 +2,7 @@ import torch
 import datasets
 import argparse
 import systems
+import torch.multiprocessing as mp
 from pydlutils.torch import seed
 from loguru import logger
 from datetime import datetime
@@ -27,6 +28,7 @@ class Trainer:
         system.model.train()
 
     def train(self, system, datamodule, ckpt_path):
+        # scaler = torch.cuda.amp.GradScaler()
         max_epoch = self.cfg.get("max_epoch", 1)
         cfg = self.cfg
         system.setup(self.writer, self.device)
@@ -42,6 +44,11 @@ class Trainer:
                 loss = system.training_step(batch, batch_idx)
                 loss["loss"].backward()
                 optimizer.step()
+                # with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                #     loss = system.training_step(batch, batch_idx)
+                # scaler.scale(loss["loss"]).backward()
+                # scaler.step(optimizer)
+                # scaler.update()
                 scheduler.step()
                 self.global_step += 1
                 if self.global_step % cfg.log_every_n_steps == 0 or batch_idx == 0:
@@ -75,6 +82,8 @@ def main():
     config.save_dir = f"{config.exp_dir}/{config.trial_name}/save"
     seed.set_seed(config.seed)
     dm = datasets.make(config.dataset.name, config.dataset)
+    config.model.num_samples_per_ray_bg = config.dataset.num_samples_per_ray_bg
+    config.model.num_samples_per_ray = config.dataset.num_samples_per_ray
     system = systems.make(
         config.system.name,
         config,
@@ -85,4 +94,5 @@ def main():
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()
