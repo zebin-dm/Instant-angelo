@@ -52,6 +52,7 @@ class BaseSystem(SaverMixin):
                 value = start_value + (end_value - start_value) * max(
                     min(1.0, (current_step - start_step) / (end_step - start_step)), 0.0
                 )
+
             elif isinstance(end_step, float):
                 current_step = self.current_epoch
                 value = start_value + (end_value - start_value) * max(
