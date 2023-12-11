@@ -11,7 +11,6 @@ from models.utils import scale_anything, get_activation, cleanup
 from models.network_utils import get_encoding, get_mlp, get_encoding_with_network
 from systems.utils import update_module_step
 from nerfacc import ContractionType
-from loguru import logger
 
 import trimesh
 
@@ -31,12 +30,11 @@ def contract_to_unisphere(x, radius, contraction_type):
     return x
 
 
-"""
-Modified from https://github.com/NVlabs/neuralangelo/blob/main/projects/neuralangelo/scripts/extract_mesh.py
-"""
-
-
 class MarchingCubeHelper(nn.Module):
+    """
+    Modified from https://github.com/NVlabs/neuralangelo/blob/main/projects/neuralangelo/scripts/extract_mesh.py
+    """
+
     def __init__(self, sdf_func, bounds, resolution, block_res=256, method="mc"):
         super().__init__()
         self.sdf_func = sdf_func

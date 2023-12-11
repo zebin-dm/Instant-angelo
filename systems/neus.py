@@ -124,12 +124,12 @@ class NeuSSystem(BaseSystem):
         self.add_scalar("train/loss_rgb_mse", loss_rgb_mse)
         loss += loss_rgb_mse * self.C(self.config.system.loss.lambda_rgb_mse)
 
-        loss_rgb_l1 = F.l1_loss(
-            out["comp_rgb_full"][out["rays_valid_full"][..., 0]],
-            batch["rgb"][out["rays_valid_full"][..., 0]],
-        )
-        self.add_scalar("train/loss_rgb", loss_rgb_l1)
-        loss += loss_rgb_l1 * self.C(self.config.system.loss.lambda_rgb_l1)
+        # loss_rgb_l1 = F.l1_loss(
+        #     out["comp_rgb_full"][out["rays_valid_full"][..., 0]],
+        #     batch["rgb"][out["rays_valid_full"][..., 0]],
+        # )
+        # self.add_scalar("train/loss_rgb", loss_rgb_l1)
+        # loss += loss_rgb_l1 * self.C(self.config.system.loss.lambda_rgb_l1)
 
         loss_eikonal = (
             (torch.linalg.norm(out["sdf_grad_samples"], ord=2, dim=-1) - 1.0) ** 2
@@ -137,17 +137,17 @@ class NeuSSystem(BaseSystem):
         self.add_scalar("train/loss_eikonal", loss_eikonal)
         loss += loss_eikonal * self.C(self.config.system.loss.lambda_eikonal)
 
-        opacity = torch.clamp(out["opacity"].squeeze(-1), 1.0e-3, 1.0 - 1.0e-3)
+        # opacity = torch.clamp(out["opacity"].squeeze(-1), 1.0e-3, 1.0 - 1.0e-3)
 
-        loss_opaque = binary_cross_entropy(opacity, opacity)
-        self.add_scalar("train/loss_opaque", loss_opaque)
-        loss += loss_opaque * self.C(self.config.system.loss.lambda_opaque)
+        # loss_opaque = binary_cross_entropy(opacity, opacity)
+        # self.add_scalar("train/loss_opaque", loss_opaque)
+        # loss += loss_opaque * self.C(self.config.system.loss.lambda_opaque)
 
-        loss_sparsity = torch.exp(
-            -self.config.system.loss.sparsity_scale * out["sdf_samples"].abs()
-        ).mean()
-        self.add_scalar("train/loss_sparsity", loss_sparsity)
-        loss += loss_sparsity * self.C(self.config.system.loss.lambda_sparsity)
+        # loss_sparsity = torch.exp(
+        #     -self.config.system.loss.sparsity_scale * out["sdf_samples"].abs()
+        # ).mean()
+        # self.add_scalar("train/loss_sparsity", loss_sparsity)
+        # loss += loss_sparsity * self.C(self.config.system.loss.lambda_sparsity)
 
         if self.C(self.config.system.loss.lambda_curvature) > 0:
             assert (
@@ -159,30 +159,30 @@ class NeuSSystem(BaseSystem):
 
         # distortion loss proposed in MipNeRF360
         # an efficient implementation from https://github.com/sunset1995/torch_efficient_distloss
-        if self.C(self.config.system.loss.lambda_distortion) > 0:
-            loss_distortion = flatten_eff_distloss(
-                out["weights"], out["points"], out["intervals"], out["ray_indices"]
-            )
-            self.add_scalar("train/loss_distortion", loss_distortion)
-            loss += loss_distortion * self.C(self.config.system.loss.lambda_distortion)
+        # if self.C(self.config.system.loss.lambda_distortion) > 0:
+        #     loss_distortion = flatten_eff_distloss(
+        #         out["weights"], out["points"], out["intervals"], out["ray_indices"]
+        #     )
+        #     self.add_scalar("train/loss_distortion", loss_distortion)
+        #     loss += loss_distortion * self.C(self.config.system.loss.lambda_distortion)
         # backgound
-        if self.C(self.config.system.loss.lambda_distortion_bg) > 0:
-            loss_distortion_bg = flatten_eff_distloss(
-                out["weights_bg"],
-                out["points_bg"],
-                out["intervals_bg"],
-                out["ray_indices_bg"],
-            )
-            self.add_scalar("train/loss_distortion_bg", loss_distortion_bg)
-            loss += loss_distortion_bg * self.C(
-                self.config.system.loss.lambda_distortion_bg
-            )
+        # if self.C(self.config.system.loss.lambda_distortion_bg) > 0:
+        #     loss_distortion_bg = flatten_eff_distloss(
+        #         out["weights_bg"],
+        #         out["points_bg"],
+        #         out["intervals_bg"],
+        #         out["ray_indices_bg"],
+        #     )
+        #     self.add_scalar("train/loss_distortion_bg", loss_distortion_bg)
+        #     loss += loss_distortion_bg * self.C(
+        #         self.config.system.loss.lambda_distortion_bg
+        #     )
 
-        losses_model_reg = self.model.regularizations(out)
-        for name, value in losses_model_reg.items():
-            self.add_scalar(f"train/loss_{name}", value)
-            loss_ = value * self.C(self.config.system.loss[f"lambda_{name}"])
-            loss += loss_
+        # losses_model_reg = self.model.regularizations(out)
+        # for name, value in losses_model_reg.items():
+        #     self.add_scalar(f"train/loss_{name}", value)
+        #     loss_ = value * self.C(self.config.system.loss[f"lambda_{name}"])
+        #     loss += loss_
 
         # sdf loss proposed in Geo-Neus and normal loss proposed in regsdf
         if self.C(self.config.system.loss.lambda_sdf_l1) > 0:
@@ -208,6 +208,11 @@ class NeuSSystem(BaseSystem):
             )
 
         self.add_scalar("train/inv_s", out["inv_s"])
+
+        self.add_scalar(
+            "train_params/curvature",
+            self.C(self.config.system.loss.lambda_curvature),
+        )
 
         for name, value in self.config.system.loss.items():
             if name.startswith("lambda"):
