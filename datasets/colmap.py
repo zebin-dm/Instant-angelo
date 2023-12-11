@@ -1,13 +1,11 @@
 import os
-import sys
-import copy
 import math
 import numpy as np
 from PIL import Image
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, IterableDataset
+from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms.functional as TF
 import open3d as o3d
 
@@ -455,11 +453,10 @@ class ColmapDatasetBase(Dataset):
         return occ_mask
 
     def __len__(self):
-        return len(self.all_images)
-
-    # def __getitem__(self, index):
-    #     if self.split == "train":
-    #     return {"index": index}
+        if self.split == "train":
+            return 999999
+        else:
+            return len(self.all_images)
 
     def __getitem__(self, index):
         cfg = self.config
@@ -543,62 +540,14 @@ class ColmapDatasetBase(Dataset):
             "bg_color": bg_color,
         }
 
-    def update_ray_num(self, num_samples_full: int):
-        train_num_rays = int(
-            self.train_num_rays * (self.train_num_samples / num_samples_full)
-        )
-        self.train_num_rays = min(
-            int(self.train_num_rays * 0.9 + train_num_rays * 0.1),
-            self.config.max_train_num_rays,
-        )
+    def update_ray_num(self, global_step: int):
+        ratio = min(global_step / 5000, 1.0)
+        increase = ratio * (self.config.max_train_num_rays - self.config.train_num_rays)
+        self.train_num_rays = int(self.config.train_num_rays + increase)
         return self.train_num_rays
 
 
-# class ColmapDataset(Dataset, ColmapDatasetBase):
-#     def __init__(self, config, split):
-#         self.setup(config, split)
-
-#     def __len__(self):
-#         return len(self.all_images)
-
-#     def __getitem__(self, index):
-#         return {"index": index}
-
-
-# class ColmapIterableDataset(IterableDataset, ColmapDatasetBase):
-#     def __init__(self, config, split):
-#         self.setup(config, split)
-
-#     def __iter__(self):
-#         while True:
-#             yield {}
-
-
-class InfiniteDataLoader(DataLoader):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.dataset_iterator = super().__iter__()
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        try:
-            batch = next(self.dataset_iterator)
-        except StopIteration:
-            self.dataset_iterator = super().__iter__()
-            batch = next(self.dataset_iterator)
-        return batch
-
-
 def collate_fn(batch):
-    # assert len(batch) == 1
-    # out = {}
-    # for key, value in batch[0].items():
-    #     if isinstance(value, torch.Tensor):
-    #         out[key] = value.to("cpu")
-    #     else:
-    #         out[key] = value
     return batch[0]
 
 
@@ -627,7 +576,7 @@ class ColmapDataModule:
     def general_loader(self, dataset, batch_size, loader):
         return loader(
             dataset,
-            num_workers=0,
+            num_workers=2,
             batch_size=batch_size,
             pin_memory=False,
             sampler=None,
@@ -635,47 +584,7 @@ class ColmapDataModule:
         )
 
     def train_dataloader(self):
-        return self.general_loader(
-            self.train_dataset, batch_size=1, loader=InfiniteDataLoader
-        )
+        return self.general_loader(self.train_dataset, batch_size=1, loader=DataLoader)
 
     def test_dataloader(self):
         return self.general_loader(self.test_dataset, batch_size=1, loader=DataLoader)
-
-
-# @datasets.register("colmap")
-# class ColmapDataModule:
-#     def __init__(self, config, device=None):
-#         super().__init__()
-#         self.config = config
-#         self.device = device
-
-#     def setup(self, stage=None, device=None):
-#         if device is None:
-#             device = self.device
-#         if stage in [None, "train"]:
-#             self.train_dataset = ColmapIterableDataset(self.config, "train")
-#             self.train_dataset.to_device(device)
-#         if stage in [None, "test"]:
-#             self.test_dataset = ColmapDataset(
-#                 self.config, self.config.get("test_split", "test")
-#             )
-#             self.test_dataset.to_device(device)
-
-#     def prepare_data(self):
-#         pass
-
-#     def general_loader(self, dataset, batch_size):
-#         return DataLoader(
-#             dataset,
-#             num_workers=os.cpu_count(),
-#             batch_size=batch_size,
-#             pin_memory=True,
-#             sampler=None,
-#         )
-
-#     def train_dataloader(self):
-#         return self.general_loader(self.train_dataset, batch_size=1)
-
-#     def test_dataloader(self):
-#         return self.general_loader(self.test_dataset, batch_size=1)

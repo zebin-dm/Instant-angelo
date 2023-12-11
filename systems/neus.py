@@ -4,7 +4,6 @@ from loguru import logger
 from torch_efficient_distloss import flatten_eff_distloss
 
 import systems
-from models.ray_utils import get_rays
 from systems.base import BaseSystem
 from systems.criterions import PSNR, binary_cross_entropy
 
@@ -125,10 +124,8 @@ class NeuSSystem(BaseSystem):
         loss = 0.0
 
         # update train_num_rays
-        # if self.config.model.dynamic_ray_sampling:
-        #     train_num_rays = self.dataset.update_ray_num(
-        #         out["num_samples_full"].sum().item()
-        #     )
+        if self.config.model.dynamic_ray_sampling:
+            train_num_rays = self.dataset.update_ray_num(self.global_step)
         # train_num_rays = int(
         #     self.train_num_rays
         #     * (self.train_num_samples / out["num_samples_full"].sum().item())
@@ -237,7 +234,7 @@ class NeuSSystem(BaseSystem):
             if name.startswith("lambda"):
                 self.add_scalar(f"train_params/{name}", self.C(value))
 
-        # self.add_scalar("train/num_rays", float(train_num_rays))
+        self.add_scalar("train/num_rays", float(train_num_rays))
 
         return {"loss": loss}
 
