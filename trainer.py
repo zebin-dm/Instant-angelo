@@ -48,10 +48,12 @@ class Trainer:
                     logger.info(f"Epoch {epoch}: {self.global_step}/{cfg.max_steps}")
 
                 if self.global_step % cfg.val_check_interval == 0:
+                    # optimizer.zero_grad()
                     self.test(system, datamodule)
 
                 if self.global_step == cfg.max_steps:
                     break
+                # torch.cuda.empty_cache()
 
         system.export()
 

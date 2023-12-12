@@ -236,15 +236,10 @@ class VolumeSDF(BaseImplicitGeometry):
             encoding.n_output_dims, self.n_output_dims, self.config.mlp_network_config
         )
         self.encoding, self.network = encoding, network
-        self.grad_type = self.config.grad_type
         self.finite_difference_eps = self.config.get("finite_difference_eps", 1e-3)
         # the actual value used in training
         # will update at certain steps if finite_difference_eps="progressive"
         self._finite_difference_eps = None
-        if self.grad_type == "finite_difference":
-            logger.info(
-                f"Using finite difference to compute gradients with eps={self.finite_difference_eps}"
-            )
 
     def forward(
         self,
@@ -254,143 +249,57 @@ class VolumeSDF(BaseImplicitGeometry):
         with_laplace=False,
         with_auxiliary_feature=False,
     ):
-        with torch.inference_mode(
-            torch.is_inference_mode_enabled()
-            and not (with_grad and self.grad_type == "analytic")
-        ):
-            with torch.set_grad_enabled(
-                self.training or (with_grad and self.grad_type == "analytic")
-            ):
-                if with_grad and self.grad_type == "analytic":
-                    if not self.training:
-                        points = (
-                            points.clone()
-                        )  # points may be in inference mode, get a copy to enable grad
-                    points.requires_grad_(True)
+        points_ = points[..., None, :]
+        eps = self._finite_difference_eps
+        if with_grad:
+            with torch.no_grad():
+                offsets = torch.as_tensor(
+                    [
+                        [0.0, 0.0, 0.0],
+                        [eps, 0.0, 0.0],
+                        [-eps, 0.0, 0.0],
+                        [0.0, eps, 0.0],
+                        [0.0, -eps, 0.0],
+                        [0.0, 0.0, eps],
+                        [0.0, 0.0, -eps],
+                    ]
+                ).to(points_)
+                points_ = (points_ + offsets).clamp(-self.radius, self.radius)
 
-                points_ = points  # points in the original scale
-                points = contract_to_unisphere(
-                    points, self.radius, self.contraction_type
-                )  # points normalized to (0, 1)
+        points_ = contract_to_unisphere(points_, self.radius, self.contraction_type)
+        out = self.network(self.encoding(points_.view(-1, 3))).float()
+        out = out.view(*points_.shape[:-1], self.n_output_dims)
+        sdf, feature = out[..., 0, 0], out[..., 0, :]
 
-                out = (
-                    self.network(self.encoding(points.view(-1, 3)))
-                    .view(*points.shape[:-1], self.n_output_dims)
-                    .float()
-                )
-                sdf, feature = out[..., 0], out
-                if "sdf_activation" in self.config:
-                    sdf = get_activation(self.config.sdf_activation)(
-                        sdf + float(self.config.sdf_bias)
-                    )
-                if "feature_activation" in self.config:
-                    feature = get_activation(self.config.feature_activation)(feature)
-                if with_grad:
-                    if self.grad_type == "analytic":
-                        grad = torch.autograd.grad(
-                            sdf,
-                            points_,
-                            grad_outputs=torch.ones_like(sdf),
-                            create_graph=True,
-                            retain_graph=True,
-                            only_inputs=True,
-                        )[0]
-                    elif self.grad_type == "finite_difference":
-                        eps = self._finite_difference_eps
-                        offsets = torch.as_tensor(
-                            [
-                                [eps, 0.0, 0.0],
-                                [-eps, 0.0, 0.0],
-                                [0.0, eps, 0.0],
-                                [0.0, -eps, 0.0],
-                                [0.0, 0.0, eps],
-                                [0.0, 0.0, -eps],
-                            ]
-                        ).to(points_)
-                        points_d_ = (points_[..., None, :] + offsets).clamp(
-                            -self.radius, self.radius
-                        )
-                        points_d = scale_anything(
-                            points_d_, (-self.radius, self.radius), (0, 1)
-                        )
-                        points_d_sdf = (
-                            self.network(self.encoding(points_d.view(-1, 3)))[..., 0]
-                            .view(*points.shape[:-1], 6)
-                            .float()
-                        )
-                        grad = (
-                            0.5
-                            * (points_d_sdf[..., 0::2] - points_d_sdf[..., 1::2])
-                            / eps
-                        )
+        if with_grad:
+            points_d_sdf = out[..., 1:, 0]
+            grad = 0.5 * (points_d_sdf[..., 0::2] - points_d_sdf[..., 1::2]) / eps
 
-                if with_laplace or with_auxiliary_feature:
-                    eps = self._finite_difference_eps
-                    rand_directions = torch.randn_like(points)
-                    rand_directions = F.normalize(rand_directions, dim=-1)
-
-                    # instead of random direction we take the normals at these points, and calculate a random vector that is orthogonal
-                    normals = F.normalize(grad, dim=-1)
-                    tangent = torch.cross(normals, rand_directions)
-                    rand_directions = tangent  # set the random moving direction to be the tangent direction now
-
-                    points_shifted = points.clone() + rand_directions * eps
-
-                if with_auxiliary_feature:
-                    points_shifted_ = scale_anything(
-                        points_shifted, (-self.radius, self.radius), (0, 1)
-                    )
-                    points_shifted_feature = (
-                        self.network(self.encoding(points_shifted_.view(-1, 3)))
-                        .view(*points.shape[:-1], self.n_output_dims)
-                        .float()
-                    )
-                    if "feature_activation" in self.config:
-                        points_shifted_feature = get_activation(
-                            self.config.feature_activation
-                        )(points_shifted_feature)
-                if with_laplace:
-                    offsets = torch.as_tensor(
-                        [
-                            [eps, 0.0, 0.0],
-                            [-eps, 0.0, 0.0],
-                            [0.0, eps, 0.0],
-                            [0.0, -eps, 0.0],
-                            [0.0, 0.0, eps],
-                            [0.0, 0.0, -eps],
-                        ]
-                    ).to(points_)
-                    points_shifted_d_ = (points_shifted[..., None, :] + offsets).clamp(
-                        -self.radius, self.radius
-                    )
-                    points_shifted_d = scale_anything(
-                        points_shifted_d_, (-self.radius, self.radius), (0, 1)
-                    )
-                    points_shifted_d_sdf = (
-                        self.network(self.encoding(points_shifted_d.view(-1, 3)))[
-                            ..., 0
-                        ]
-                        .view(*points.shape[:-1], 6)
-                        .float()
-                    )
-                    sdf_gradients_shifted = (
-                        0.5
-                        * (
-                            points_shifted_d_sdf[..., 0::2]
-                            - points_shifted_d_sdf[..., 1::2]
-                        )
-                        / eps
-                    )
-
-                    normals_shifted = F.normalize(sdf_gradients_shifted, dim=-1)
-
-                    dot = (normals * normals_shifted).sum(dim=-1, keepdim=True)
-                    # the dot would assign low weight importance to normals that are almost the same, and increasing error the more they deviate. So it's something like and L2 loss. But we want a L1 loss so we get the angle, and then we map it to range [0,1]
-                    angle = torch.acos(
-                        torch.clamp(dot, -1.0 + 1e-6, 1.0 - 1e-6)
-                    )  # goes to range 0 when the angle is the same and pi when is opposite
-
-                    laplace = angle / math.pi  # map to [0,1 range]
+        if with_laplace and with_grad:
+            with torch.no_grad():
+                rand_directions = torch.randn_like(points)
+                rand_directions = F.normalize(rand_directions, dim=-1)
+            normals = F.normalize(grad, dim=-1)
+            # instead of random direction we take the normals at these points, and calculate a random vector that is orthogonal
+            tangent = torch.cross(normals, rand_directions)
+            # pts_sd stands for points_shifted
+            pts_sd = points.clone() + tangent * eps
+            pts_sd_d = (pts_sd[..., None, :] + offsets[1:]).clamp(
+                -self.radius, self.radius
+            )
+            pts_sd_d_ = scale_anything(pts_sd_d, (-self.radius, self.radius), (0, 1))
+            pts_sd_d_sdf = (
+                self.network(self.encoding(pts_sd_d_.view(-1, 3)))[..., 0]
+                .view(*points.shape[:-1], 6)
+                .float()
+            )
+            grad_sd = 0.5 * (pts_sd_d_sdf[..., 0::2] - pts_sd_d_sdf[..., 1::2]) / eps
+            normals_shifted = F.normalize(grad_sd, dim=-1)
+            dot = (normals * normals_shifted).sum(dim=-1, keepdim=True)
+            # the dot would assign low weight importance to normals that are almost the same, and increasing error the more they deviate. So it's something like and L2 loss. But we want a L1 loss so we get the angle, and then we map it to range [0,1]
+            # goes to range 0 when the angle is the same and pi when is opposite
+            angle = torch.acos(torch.clamp(dot, -1.0 + 1e-6, 1.0 - 1e-6))
+            laplace = angle / math.pi  # map to [0,1 range]
 
         rv = [sdf]
         if with_grad:
@@ -399,22 +308,15 @@ class VolumeSDF(BaseImplicitGeometry):
             rv.append(feature)
         if with_laplace:
             rv.append(laplace)
-        if with_auxiliary_feature:
-            rv.append(points_shifted_feature)
-        rv = [v if self.training else v.detach() for v in rv]
+        rv = [v if self.training or v is None else v.detach() for v in rv]
         return rv[0] if len(rv) == 1 else rv
 
     def forward_level(self, points):
-        points = contract_to_unisphere(
-            points, self.radius, self.contraction_type
-        )  # points normalized to (0, 1)
+        # points normalized to (0, 1)
+        points = contract_to_unisphere(points, self.radius, self.contraction_type)
         sdf = self.network(self.encoding(points.view(-1, 3))).view(
             *points.shape[:-1], self.n_output_dims
         )[..., 0]
-        if "sdf_activation" in self.config:
-            sdf = get_activation(self.config.sdf_activation)(
-                sdf + float(self.config.sdf_bias)
-            )
         return sdf
 
     def update_step(self, epoch, global_step):
