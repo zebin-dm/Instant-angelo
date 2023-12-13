@@ -1,4 +1,5 @@
 import models
+import torch
 from systems.utils import parse_optimizer, parse_scheduler, update_module_step
 from utils.mixins import SaverMixin
 from utils.misc import config_to_primitive
@@ -62,15 +63,17 @@ class BaseSystem(SaverMixin):
     def preprocess_data(self, batch, stage):
         raise NotImplementedError
 
+    @torch.inference_mode()
     def on_train_batch_start(self, batch, dataset):
         self.dataset = dataset
         self.preprocess_data(batch, "train")
         update_module_step(self.model, self.current_epoch, self.global_step)
 
+    @torch.inference_mode()
     def on_test_batch_start(self, batch, dataset):
         self.dataset = dataset
         self.preprocess_data(batch, "test")
-        update_module_step(self.model, self.current_epoch, self.global_step)
+        # update_module_step(self.model, self.current_epoch, self.global_step)
 
     def training_step(self, batch, batch_idx):
         raise NotImplementedError

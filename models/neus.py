@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from loguru import logger
 
 import models
 from models.base import BaseModel
@@ -293,6 +294,7 @@ class NeuSModel(BaseModel):
         sdf, sdf_grad, feature, sdf_laplace = self.geometry(
             positions, with_grad=True, with_feature=True, with_laplace=True
         )
+
         normal = F.normalize(sdf_grad, p=2, dim=-1)
         alpha = self.get_alpha(sdf, normal, t_dirs, dists)[..., None]
         rgb = self.texture(feature, t_dirs, normal)

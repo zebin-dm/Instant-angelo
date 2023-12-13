@@ -26,6 +26,12 @@ class Trainer:
             system.test_step(batch, bidx)
         system.model.train()
 
+    def export(self, system):
+        logger.info("Exporting mesh ...")
+        torch.cuda.empty_cache()
+        system.model.eval()
+        system.export()
+
     def train(self, system, datamodule, ckpt_path):
         max_epoch = self.cfg.get("max_epoch", 1)
         cfg = self.cfg
@@ -34,15 +40,16 @@ class Trainer:
         optimizer, scheduler = system.configure_optimizers()
         for epoch in range(max_epoch):
             dataloader = datamodule.train_dataloader()
-            system.model.train()
+            system.model.train().float()
+            optimizer.zero_grad()
             for batch_idx, batch in enumerate(dataloader):
-                optimizer.zero_grad()
                 system.update_status(epoch, self.global_step)
                 system.on_train_batch_start(batch, dataloader.dataset)
                 loss = system.training_step(batch, batch_idx)
                 loss["loss"].backward()
                 optimizer.step()
                 scheduler.step()
+                optimizer.zero_grad()
                 self.global_step += 1
                 if self.global_step % cfg.log_every_n_steps == 0 or batch_idx == 0:
                     logger.info(f"Epoch {epoch}: {self.global_step}/{cfg.max_steps}")
@@ -52,8 +59,7 @@ class Trainer:
 
                 if self.global_step == cfg.max_steps:
                     break
-
-        system.export()
+        self.export(system)
 
 
 def main():
