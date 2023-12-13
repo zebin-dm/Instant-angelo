@@ -34,7 +34,7 @@ class Trainer:
         optimizer, scheduler = system.configure_optimizers()
         for epoch in range(max_epoch):
             dataloader = datamodule.train_dataloader()
-            system.model.train()
+            system.model.train().float()
             for batch_idx, batch in enumerate(dataloader):
                 optimizer.zero_grad()
                 system.update_status(epoch, self.global_step)
