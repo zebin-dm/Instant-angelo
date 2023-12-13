@@ -118,8 +118,8 @@ system:
   loss:
     lambda_normal: 0.
     lambda_rgb_mse: 10.
-    lambda_eikonal: 0.1
-    lambda_curvature: [0, 0, 5.e-1, 5000]
+    lambda_eikonal: [0, 0.01, 0.1, 4000]
+    lambda_curvature: [0, 0, 0.5, 5000]
     sparsity_scale: 1.
   optimizer:
     name: AdamW

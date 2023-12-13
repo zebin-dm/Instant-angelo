@@ -31,12 +31,11 @@ def contract_to_unisphere(x, radius, contraction_type):
     return x
 
 
-"""
-Modified from https://github.com/NVlabs/neuralangelo/blob/main/projects/neuralangelo/scripts/extract_mesh.py
-"""
-
-
 class MarchingCubeHelper(nn.Module):
+    """
+    Modified from https://github.com/NVlabs/neuralangelo/blob/main/projects/neuralangelo/scripts/extract_mesh.py
+    """
+
     def __init__(self, sdf_func, bounds, resolution, block_res=256, method="mc"):
         super().__init__()
         self.sdf_func = sdf_func
@@ -243,7 +242,18 @@ class VolumeSDF(BaseImplicitGeometry):
 
     def forward(self, points, with_grad=True, with_feature=True, with_laplace=False):
         points = points.float()
-        # with torch.inference_mode(torch.is_inference_mode_enabled()):
+        eps = self._finite_difference_eps
+        with torch.no_grad():
+            offsets = torch.as_tensor(
+                [
+                    [eps, 0.0, 0.0],
+                    [-eps, 0.0, 0.0],
+                    [0.0, eps, 0.0],
+                    [0.0, -eps, 0.0],
+                    [0.0, 0.0, eps],
+                    [0.0, 0.0, -eps],
+                ]
+            ).to(points)
         with torch.set_grad_enabled(self.training):
             points_ = points  # points in the original scale
             # points normalized to (0, 1)
@@ -253,17 +263,6 @@ class VolumeSDF(BaseImplicitGeometry):
             sdf, feature = out[..., 0], out
 
             if with_grad:
-                eps = self._finite_difference_eps
-                offsets = torch.as_tensor(
-                    [
-                        [eps, 0.0, 0.0],
-                        [-eps, 0.0, 0.0],
-                        [0.0, eps, 0.0],
-                        [0.0, -eps, 0.0],
-                        [0.0, 0.0, eps],
-                        [0.0, 0.0, -eps],
-                    ]
-                ).to(points_)
                 points_d_ = (points_[..., None, :] + offsets).clamp(
                     -self.radius, self.radius
                 )
@@ -272,36 +271,24 @@ class VolumeSDF(BaseImplicitGeometry):
                 )
                 points_d_sdf = self.network(self.encoding(points_d.view(-1, 3)))[
                     ..., 0
-                ].view(*points.shape[:-1], 6)
+                ].view(*points_d.shape[:-1])
                 grad = 0.5 * (points_d_sdf[..., 0::2] - points_d_sdf[..., 1::2]) / eps
 
             if with_laplace or with_grad:
                 normals = F.normalize(grad, dim=-1)
                 with torch.no_grad():
-                    eps = self._finite_difference_eps
                     rand_directions = torch.randn_like(points)
                     rand_directions = F.normalize(rand_directions, dim=-1)
                 # instead of random direction we take the normals at these points, and calculate a random vector that is orthogonal
                 tangent = torch.cross(normals, rand_directions)
-                ptssd = points.clone() + tangent * eps
-
-                offsets = torch.as_tensor(
-                    [
-                        [eps, 0.0, 0.0],
-                        [-eps, 0.0, 0.0],
-                        [0.0, eps, 0.0],
-                        [0.0, -eps, 0.0],
-                        [0.0, 0.0, eps],
-                        [0.0, 0.0, -eps],
-                    ]
-                ).to(points_)
+                ptssd = points_.clone() + tangent * eps
                 ptssd_d_ = (ptssd[..., None, :] + offsets).clamp(
                     -self.radius, self.radius
                 )
                 ptssd_d = scale_anything(ptssd_d_, (-self.radius, self.radius), (0, 1))
                 ptssd_sdf = self.network(self.encoding(ptssd_d.view(-1, 3)))[
                     ..., 0
-                ].view(*points.shape[:-1], 6)
+                ].view(*ptssd_d.shape[:-1])
                 grad_shifted = 0.5 * (ptssd_sdf[..., 0::2] - ptssd_sdf[..., 1::2]) / eps
                 normals_shifted = F.normalize(grad_shifted, dim=-1)
                 dot = (normals * normals_shifted).sum(dim=-1, keepdim=True)
@@ -321,16 +308,11 @@ class VolumeSDF(BaseImplicitGeometry):
         return rv[0] if len(rv) == 1 else rv
 
     def forward_level(self, points):
-        points = contract_to_unisphere(
-            points, self.radius, self.contraction_type
-        )  # points normalized to (0, 1)
-        sdf = self.network(self.encoding(points.view(-1, 3))).view(
-            *points.shape[:-1], self.n_output_dims
-        )[..., 0]
-        if "sdf_activation" in self.config:
-            sdf = get_activation(self.config.sdf_activation)(
-                sdf + float(self.config.sdf_bias)
-            )
+        # points normalized to (0, 1)
+        points = contract_to_unisphere(points, self.radius, self.contraction_type)
+        sdf = self.network(self.encoding(points.view(-1, 3)))[..., 0].view(
+            *points.shape[:-1]
+        )
         return sdf
 
     def update_step(self, epoch, global_step):
