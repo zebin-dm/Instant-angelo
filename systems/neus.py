@@ -54,17 +54,6 @@ class NeuSSystem(BaseSystem):
 
         if stage in ["train"]:
             c2w = self.dataset.all_c2w[index]
-            # sample the same number of points as the ray
-            # pts_index = torch.randint(
-            #     0, len(self.dataset.all_points), size=(self.train_num_rays,)
-            # )
-            # pts = self.dataset.all_points[pts_index]
-            # pts_weights = self.dataset.all_points_confidence[pts_index]
-            # if self.dataset.pts3d_normal is not None:
-            #     pts_normal = self.dataset.pts3d_normal[pts_index]
-            # else:
-            #     pts_normal = torch.tensor([])
-
             if self.dataset.directions.ndim == 3:  # (H, W, 3)
                 directions = self.dataset.directions[y, x]
             elif self.dataset.directions.ndim == 4:  # (N, H, W, 3)
@@ -75,9 +64,6 @@ class NeuSSystem(BaseSystem):
             )
         else:
             c2w = self.dataset.all_c2w[index][0]
-            # pts = torch.tensor([])
-            # pts_weights = torch.tensor([])
-            # pts_normal = torch.tensor([])
             if self.dataset.directions.ndim == 3:  # (H, W, 3)
                 directions = self.dataset.directions
             elif self.dataset.directions.ndim == 4:  # (N, H, W, 3)
@@ -88,14 +74,11 @@ class NeuSSystem(BaseSystem):
             )
 
         rays = torch.cat([rays_o, F.normalize(rays_d, p=2, dim=-1)], dim=-1)
-
         batch.update({"rays": rays, "rgb": rgb})
 
     def training_step(self, batch, batch_idx):
         out = self.forward(batch)
-
         loss = 0.0
-
         # update train_num_rays
         if self.config.model.dynamic_ray_sampling:
             train_num_rays = int(
