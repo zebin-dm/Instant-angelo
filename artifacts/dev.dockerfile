@@ -105,7 +105,7 @@ RUN pip install \
     Pillow==9.5.0 \
     trimesh \
     natsort \
-    omegaconf==2.2.3 \
+    omegaconf \
     matplotlib \
     opencv-python \
     imageio \
