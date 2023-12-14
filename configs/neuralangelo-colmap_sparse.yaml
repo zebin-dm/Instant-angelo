@@ -24,11 +24,10 @@ model:
   batch_image_sampling: true
   randomized: true
   ray_chunk: 2048
-  cos_anneal_end: 20000
+  cos_anneal_end: 20000  # TODO： modify to 16000
   background_color: random
   variance:
     init_val: 0.3
-    modulate: false
   geometry:
     name: volume-sdf
     radius: ${model.radius}
@@ -74,7 +73,7 @@ model:
       n_hidden_layers: 2
     color_activation: sigmoid
   # background model configurations
-  num_samples_per_ray_bg: 64
+  num_samples_per_ray_bg: 128
   geometry_bg:
     name: volume-density
     radius: ${model.radius}

@@ -79,6 +79,7 @@ class NeuSSystem(BaseSystem):
     def training_step(self, batch, batch_idx):
         out = self.forward(batch)
         loss = 0.0
+
         # update train_num_rays
         if self.config.model.dynamic_ray_sampling:
             train_num_rays = int(
@@ -124,6 +125,10 @@ class NeuSSystem(BaseSystem):
                 self.add_scalar(f"train_params/{name}", self.C(value))
 
         self.add_scalar("train/num_rays", float(self.train_num_rays))
+        self.add_scalar(
+            "train/num_samples", float(out["num_samples_full"].sum().item())
+        )
+        # print(f"train/num_samples: {float(out['num_samples_full'].sum().item())}")
 
         return {"loss": loss}
 
