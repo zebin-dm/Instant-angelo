@@ -57,7 +57,7 @@ class NeuSModel(BaseModel):
             10 ** (math.log10(self.far_plane_bg) / self.config.num_samples_per_ray_bg)
             - 1.0
         )
-        self.render_step_size_bg = 0.01
+        # self.render_step_size_bg = 0.01
 
         self.variance = VarianceNetwork(self.config.variance)
         radius = self.config.radius
@@ -79,7 +79,7 @@ class NeuSModel(BaseModel):
             roi_aabb=self.scene_aabb, resolution=128, levels=1
         )
         self.estimator_bg = OccGridEstimator(
-            roi_aabb=self.scene_aabb, resolution=256, levels=1
+            roi_aabb=self.scene_aabb, resolution=128, levels=4
         )
         # if self.config.grid_prune:
         #     self.estimator.occs.fill_(True)
@@ -87,9 +87,16 @@ class NeuSModel(BaseModel):
         #     self.estimator_bg.occs.fill_(True)
         #     self.estimator_bg.binaries.fill_(True)
         self.randomized = self.config.randomized
-        self.render_step_size = (
-            1.732 * 2 * self.config.radius / self.config.num_samples_per_ray
-        )
+        # self.render_step_size = (
+        #     1.732 * 2 * self.config.radius / self.config.num_samples_per_ray
+        # )
+        # self.render_step_size = 0.005
+        # self.render_step_size = (
+        #     (self.scene_aabb[3:] - self.scene_aabb[:3]) ** 2
+        # ).sum().sqrt().item() / 1000
+        self.render_step_size = 0.005
+        self.render_step_size_bg = self.render_step_size
+        print(f"self.render_step_size: {self.render_step_size}")
 
     def to_device(self, device):
         self.to(device)
@@ -136,7 +143,7 @@ class NeuSModel(BaseModel):
             # approximate for 1 - torch.exp(-density[...,None] * self.render_step_size_bg) based on taylor series
             return density[..., None] * self.render_step_size_bg
 
-        if self.training and self.config.grid_prune:
+        if self.training:
             self.estimator.update_every_n_steps(
                 step=global_step,
                 occ_eval_fn=occ_eval_fn,
@@ -199,31 +206,32 @@ class NeuSModel(BaseModel):
         # note that in nerfacc t_max is set to 1e10 if there is no intersection
         # near_plane = torch.where(t_max > 1e9, self.near_plane_bg, t_max)
         t_mins_bg = torch.where(hits, t_maxs, self.near_plane_bg)
-        with torch.no_grad():
-            # ray_indices, t_starts, t_ends = ray_marching(
-            #     rays_o,
-            #     rays_d,
-            #     scene_aabb=None,
-            #     grid=self.occupancy_grid_bg if self.config.grid_prune else None,
-            #     sigma_fn=sigma_fn,
-            #     near_plane=near_plane,
-            #     far_plane=self.far_plane_bg,
-            #     render_step_size=self.render_step_size_bg,
-            #     stratified=self.randomized,
-            #     cone_angle=self.cone_angle_bg,
-            #     alpha_thre=0.0,
-            # )
-            ray_indices, t_starts, t_ends = self.estimator_bg.sampling(
-                rays_o=rays_o,
-                rays_d=rays_d,
-                sigma_fn=sigma_fn,
-                t_min=t_mins_bg,
-                far_plane=self.far_plane_bg,
-                render_step_size=self.render_step_size,
-                stratified=self.training,
-                cone_angle=self.cone_angle_bg,
-                alpha_thre=0.0,
-            )
+        # with torch.no_grad():
+        #     ray_indices, t_starts, t_ends = ray_marching(
+        #         rays_o,
+        #         rays_d,
+        #         scene_aabb=None,
+        #         grid=self.occupancy_grid_bg if self.config.grid_prune else None,
+        #         sigma_fn=sigma_fn,
+        #         near_plane=near_plane,
+        #         far_plane=self.far_plane_bg,
+        #         render_step_size=self.render_step_size_bg,
+        #         stratified=self.randomized,
+        #         cone_angle=self.cone_angle_bg,
+        #         alpha_thre=0.0,
+        #     )
+        ray_indices, t_starts, t_ends = self.estimator_bg.sampling(
+            rays_o=rays_o,
+            rays_d=rays_d,
+            sigma_fn=sigma_fn,
+            t_min=t_mins_bg,
+            near_plane=0.05,
+            far_plane=self.far_plane_bg,
+            render_step_size=self.render_step_size_bg,
+            stratified=self.training,
+            cone_angle=0.04,
+            alpha_thre=0.01,
+        )
 
         ray_indices = ray_indices.long()
         t_origins = rays_o[ray_indices]
@@ -292,48 +300,46 @@ class NeuSModel(BaseModel):
 
             return alpha
 
-        with torch.no_grad():
-            # ray_indices, t_starts, t_ends = ray_marching(
-            #     rays_o,
-            #     rays_d,
-            #     scene_aabb=self.scene_aabb,
-            #     grid=self.occupancy_grid if self.config.grid_prune else None,
-            #     alpha_fn=None,
-            #     near_plane=None,
-            #     far_plane=None,
-            #     render_step_size=self.render_step_size,
-            #     stratified=self.randomized,
-            #     cone_angle=0.0,
-            #     alpha_thre=0.0,
-            # )
+            # with torch.no_grad():
+            #     ray_indices, t_starts, t_ends = ray_marching(
+            #         rays_o,
+            #         rays_d,
+            #         scene_aabb=self.scene_aabb,
+            #         grid=self.occupancy_grid if self.config.grid_prune else None,
+            #         alpha_fn=None,
+            #         near_plane=None,
+            #         far_plane=None,
+            #         render_step_size=self.render_step_size,
+            #         stratified=self.randomized,
+            #         cone_angle=0.0,
+            #         alpha_thre=0.0,
+            #     )
 
-            ray_indices, t_starts, t_ends = self.estimator.sampling(
-                rays_o=rays_o,
-                rays_d=rays_d,
-                alpha_fn=alpha_fn,
-                near_plane=0.0,
-                far_plane=1e10,
-                render_step_size=self.render_step_size,
-                stratified=self.training,
-                cone_angle=0.0,
-                alpha_thre=0.0,
-            )
-
-        def validate_empty_rays(ray_indices, t_start, t_end):
-            if ray_indices.nelement() == 0:
-                logger.warning("Empty rays_indices!")
-                ray_indices = torch.LongTensor([0]).to(ray_indices)
-                t_start = torch.Tensor([0]).to(ray_indices)
-                t_end = torch.Tensor([0]).to(ray_indices)
-            return ray_indices, t_start, t_end
-
-        ray_indices, t_starts, t_ends = validate_empty_rays(
-            ray_indices, t_starts, t_ends
+        ray_indices, t_starts, t_ends = self.estimator.sampling(
+            rays_o=rays_o,
+            rays_d=rays_d,
+            alpha_fn=alpha_fn,
+            near_plane=0.0,
+            far_plane=1e10,
+            render_step_size=self.render_step_size,
+            stratified=self.training,
+            cone_angle=0.0,
+            alpha_thre=0.0,
         )
-        ray_indices = ray_indices.long()
+
+        # def validate_empty_rays(ray_indices, t_start, t_end):
+        #     if ray_indices.nelement() == 0:
+        #         logger.warning("Empty rays_indices!")
+        #         ray_indices = torch.LongTensor([0]).to(ray_indices)
+        #         t_start = torch.Tensor([0]).to(ray_indices)
+        #         t_end = torch.Tensor([0]).to(ray_indices)
+        #     return ray_indices, t_start, t_end
+
+        # ray_indices, t_starts, t_ends = validate_empty_rays(
+        #     ray_indices, t_starts, t_ends
+        # )
         t_origins = rays_o[ray_indices]
         t_dirs = rays_d[ray_indices]
-        ray_indices = ray_indices.long()  # N
         t_starts = t_starts[..., None]  # Nx1
         t_ends = t_ends[..., None]  # Nx1
         midpoints = (t_starts + t_ends) / 2.0
@@ -390,9 +396,9 @@ class NeuSModel(BaseModel):
             out.update({"sdf_laplace_samples": sdf_laplace})
 
         out_bg = self.forward_bg_(rays)
-        print(
-            f'n_rays: {n_rays}, fg samples: {out["num_samples"].item()}, bg samples: {out_bg["num_samples"].item()}'
-        )
+        # print(
+        #     f'n_rays: {n_rays}, fg samples: {out["num_samples"].item()}, bg samples: {out_bg["num_samples"].item()}'
+        # )
         out_full = {
             "comp_rgb": out["comp_rgb"] + out_bg["comp_rgb"] * (1.0 - out["opacity"]),
             "num_samples": out["num_samples"] + out_bg["num_samples"],

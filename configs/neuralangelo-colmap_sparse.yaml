@@ -19,7 +19,7 @@ model:
   train_num_rays: 256
   max_train_num_rays: 8192
   grid_prune: true
-  grid_prune_occ_thre: 0.001
+  grid_prune_occ_thre: 0.01
   dynamic_ray_sampling: true
   batch_image_sampling: true
   randomized: true
