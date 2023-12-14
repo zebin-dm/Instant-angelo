@@ -18,7 +18,7 @@ class BaseSystem(SaverMixin):
     def setup(self, writer, device):
         self.device = device
         self.writer = writer
-        self.model.to(device)
+        self.model.to_device(device)
 
     def update_status(self, current_epoch, global_step):
         self.current_epoch = current_epoch

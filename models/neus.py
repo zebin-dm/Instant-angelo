@@ -91,6 +91,21 @@ class NeuSModel(BaseModel):
             1.732 * 2 * self.config.radius / self.config.num_samples_per_ray
         )
 
+    def to_device(self, device):
+        self.to(device)
+        self.estimator.to(device)
+        self.estimator_bg.to(device)
+
+    def set_train(self):
+        self.train().float()
+        self.estimator.train()
+        self.estimator_bg.train()
+
+    def set_eval(self):
+        self.eval().float()
+        self.estimator.eval()
+        self.estimator_bg.eval()
+
     def update_step(self, epoch, global_step):
         update_module_step(self.geometry, epoch, global_step)
         update_module_step(self.texture, epoch, global_step)
@@ -205,7 +220,7 @@ class NeuSModel(BaseModel):
                 t_min=t_mins_bg,
                 far_plane=self.far_plane_bg,
                 render_step_size=self.render_step_size,
-                stratified=self.randomized,
+                stratified=self.training,
                 cone_angle=self.cone_angle_bg,
                 alpha_thre=0.0,
             )
@@ -299,7 +314,7 @@ class NeuSModel(BaseModel):
                 near_plane=0.0,
                 far_plane=1e10,
                 render_step_size=self.render_step_size,
-                stratified=self.randomized,
+                stratified=self.training,
                 cone_angle=0.0,
                 alpha_thre=0.0,
             )

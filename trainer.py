@@ -20,7 +20,7 @@ class Trainer:
     def test(self, system, datamodule):
         logger.info("Testing .....")
         dataloader = datamodule.test_dataloader()
-        system.model.eval()
+        system.model.set_eval()
         for bidx, batch in enumerate(dataloader):
             system.on_test_batch_start(batch, dataloader.dataset)
             system.test_step(batch, bidx)
@@ -29,7 +29,7 @@ class Trainer:
     def export(self, system):
         logger.info("Exporting mesh ...")
         torch.cuda.empty_cache()
-        system.model.eval()
+        system.model.set_eval()
         system.export()
 
     def train(self, system, datamodule, ckpt_path):
@@ -40,7 +40,7 @@ class Trainer:
         optimizer, scheduler = system.configure_optimizers()
         for epoch in range(max_epoch):
             dataloader = datamodule.train_dataloader()
-            system.model.train().float()
+            system.model.set_train()
             optimizer.zero_grad()
             for batch_idx, batch in enumerate(dataloader):
                 system.update_status(epoch, self.global_step)
