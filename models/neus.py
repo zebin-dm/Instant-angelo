@@ -51,12 +51,13 @@ class NeuSModel(BaseModel):
         self.texture_bg = models.make(
             self.config.texture_bg.name, self.config.texture_bg
         )
-        self.geometry_bg.contraction_type = ContractionType.AABB
+        self.geometry_bg.contraction_type = ContractionType.UN_BOUNDED_SPHERE
         self.near_plane_bg, self.far_plane_bg = 0.1, 1e3
         self.cone_angle_bg = (
             10 ** (math.log10(self.far_plane_bg) / self.config.num_samples_per_ray_bg)
             - 1.0
         )
+        logger.info(f"===============> self.cone_angle_bg : {self.cone_angle_bg}")
         # self.render_step_size_bg = 0.01
 
         self.variance = VarianceNetwork(self.config.variance)
@@ -95,7 +96,8 @@ class NeuSModel(BaseModel):
         #     (self.scene_aabb[3:] - self.scene_aabb[:3]) ** 2
         # ).sum().sqrt().item() / 1000
         self.render_step_size = 0.005
-        self.render_step_size_bg = self.render_step_size
+        self.render_step_size_bg = 0.001
+        # self.render_step_size_bg = self.render_step_size
         print(f"self.render_step_size: {self.render_step_size}")
 
     def to_device(self, device):
@@ -225,11 +227,11 @@ class NeuSModel(BaseModel):
             rays_d=rays_d,
             sigma_fn=sigma_fn,
             t_min=t_mins_bg,
-            near_plane=0.05,
+            near_plane=self.near_plane_bg,
             far_plane=self.far_plane_bg,
             render_step_size=self.render_step_size_bg,
             stratified=self.training,
-            cone_angle=0.04,
+            cone_angle=0.004,
             alpha_thre=0.01,
         )
 
