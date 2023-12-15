@@ -9,6 +9,7 @@ from models.base import BaseModel
 from models.utils import chunk_batch, ContractionType
 from systems.utils import update_module_step
 from nerfacc import (
+    PropNetEstimator
     OccGridEstimator,
     render_weight_from_density,
     render_weight_from_alpha,
@@ -80,13 +81,9 @@ class NeuSModel(BaseModel):
             roi_aabb=self.scene_aabb, resolution=128, levels=1
         )
         self.estimator_bg = OccGridEstimator(
-            roi_aabb=self.scene_aabb, resolution=128, levels=4
+            roi_aabb=self.scene_aabb, resolution=128, levels=8
         )
-        # if self.config.grid_prune:
-        #     self.estimator.occs.fill_(True)
-        #     self.estimator.binaries.fill_(True)
-        #     self.estimator_bg.occs.fill_(True)
-        #     self.estimator_bg.binaries.fill_(True)
+
         self.randomized = self.config.randomized
         # self.render_step_size = (
         #     1.732 * 2 * self.config.radius / self.config.num_samples_per_ray
@@ -149,7 +146,7 @@ class NeuSModel(BaseModel):
             self.estimator.update_every_n_steps(
                 step=global_step,
                 occ_eval_fn=occ_eval_fn,
-                occ_thre=self.config.get("grid_prune_occ_thre", 0.01),
+                occ_thre=self.config.get("grid_prune_occ_thre", 0.001),
             )
             self.estimator_bg.update_every_n_steps(
                 step=global_step,
