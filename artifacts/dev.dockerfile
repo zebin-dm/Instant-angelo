@@ -101,7 +101,7 @@ RUN git clone https://github.com/lzhnb/CuMCubes.git && \
     rm -r CuMCubes
 
 RUN pip install \
-    nerfacc==0.3.5 \
+    nerfacc==0.5.3 \
     Pillow==9.5.0 \
     trimesh \
     natsort \

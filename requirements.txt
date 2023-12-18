@@ -1,5 +1,5 @@
-omegaconf==2.2.3
-nerfacc==0.3.3
+omegaconf
+nerfacc==0.5.3
 matplotlib
 opencv-python
 imageio
@@ -13,4 +13,4 @@ open3d
 trimesh
 pymcubes 
 plyfile
-# pydlutils
+pydlutils
