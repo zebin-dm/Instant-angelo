@@ -5,12 +5,10 @@ import torch.nn.functional as F
 from loguru import logger
 
 import models
-from models.base import BaseModel
 from models.utils import chunk_batch, ContractionType
 from utils.utils import update_module_step
 from nerfacc import (
     OccGridEstimator,
-    render_weight_from_density,
     render_weight_from_alpha,
     accumulate_along_rays,
     ray_aabb_intersect,
@@ -18,8 +16,6 @@ from nerfacc import (
 from nerfacc.estimators.prop_net import get_proposal_requires_grad_fn
 from models.points_sampler import PropPointSampler
 from models.renders import render_image_with_propnet
-
-# from nerfacc.intersection import ray_aabb_intersect
 
 
 class VarianceNetwork(nn.Module):
@@ -84,10 +80,6 @@ class NeuSModel(nn.Module):
         self.estimator = OccGridEstimator(
             roi_aabb=self.scene_aabb, resolution=128, levels=1
         )
-        ########################################################
-        # self.estimator_bg = OccGridEstimator(
-        #     roi_aabb=self.scene_aabb, resolution=128, levels=8
-        # )
         # TODO, remove the paramter
         max_steps = 1600
         self.estimator_bg = PropPointSampler(
@@ -106,7 +98,6 @@ class NeuSModel(nn.Module):
         # ).sum().sqrt().item() / 1000
         self.render_step_size = 0.005
         self.render_step_size_bg = 0.02
-        # self.render_step_size_bg = self.render_step_size
         print(f"self.render_step_size: {self.render_step_size}")
         self.current_epoch = None
         self.global_step = None
@@ -115,7 +106,6 @@ class NeuSModel(nn.Module):
     def to_device(self, device):
         self.to(device)
         self.estimator.to(device)
-        # self.estimator_bg.to(device)
 
     def set_train(self):
         self.train().float()
@@ -156,22 +146,12 @@ class NeuSModel(nn.Module):
             alpha = ((p + 1e-5) / (c + 1e-5)).clip(0.0, 1.0)
             return alpha
 
-        # def occ_eval_fn_bg(x):
-        #     density, _ = self.geometry_bg(x)
-        #     # approximate for 1 - torch.exp(-density[...,None] * self.render_step_size_bg) based on taylor series
-        #     return density[..., None] * self.render_step_size_bg
-
         if self.training:
             self.estimator.update_every_n_steps(
                 step=global_step,
                 occ_eval_fn=occ_eval_fn,
                 occ_thre=self.config.get("grid_prune_occ_thre", 0.001),
             )
-            # self.estimator_bg.update_every_n_steps(
-            #     step=global_step,
-            #     occ_eval_fn=occ_eval_fn_bg,
-            #     occ_thre=self.config.get("grid_prune_occ_thre_bg", 0.01),
-            # )
 
     def isosurface(self):
         mesh = self.geometry.isosurface()
@@ -208,10 +188,6 @@ class NeuSModel(nn.Module):
 
         def radiance_field(position, direction):
             density, feature = self.geometry_bg(position)
-            # logger.info(
-            #     f"density shape: {density.shape}, feature shape: {feature.shape}, direction shape: {direction.shape} "
-            # )
-
             rgb = self.texture_bg(feature, direction)
             return rgb, density
 
@@ -231,75 +207,6 @@ class NeuSModel(nn.Module):
             proposal_requires_grad=proposal_requires_grad,
             training=self.training,
         )
-
-        # def sigma_fn(t_starts, t_ends, ray_indices):
-        #     t_starts = t_starts[..., None]
-        #     t_ends = t_ends[..., None]
-        #     ray_indices = ray_indices.long()
-        #     t_origins = rays_o[ray_indices]
-        #     t_dirs = rays_d[ray_indices]
-        #     positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
-        #     density, _ = self.geometry_bg(positions)
-        #     return density
-
-        # _, t_maxs, hits = ray_aabb_intersect(
-        #     rays_o, rays_d, self.scene_aabb.view(-1, 6)
-        # )
-        # # if the ray intersects with the bounding box, start from the farther intersection point
-        # # otherwise start from self.far_plane_bg
-        # # note that in nerfacc t_max is set to 1e10 if there is no intersection
-        # # near_plane = torch.where(t_max > 1e9, self.near_plane_bg, t_max)
-        # t_mins_bg = torch.where(hits, t_maxs, self.near_plane_bg)
-        # # with torch.no_grad():
-        # #     ray_indices, t_starts, t_ends = ray_marching(
-        # #         rays_o,
-        # #         rays_d,
-        # #         scene_aabb=None,
-        # #         grid=self.occupancy_grid_bg if self.config.grid_prune else None,
-        # #         sigma_fn=sigma_fn,
-        # #         near_plane=near_plane,
-        # #         far_plane=self.far_plane_bg,
-        # #         render_step_size=self.render_step_size_bg,
-        # #         stratified=self.randomized,
-        # #         cone_angle=self.cone_angle_bg,
-        # #         alpha_thre=0.0,
-        # #     )
-        # ray_indices, t_starts, t_ends = self.estimator_bg.sampling(
-        #     rays_o=rays_o,
-        #     rays_d=rays_d,
-        #     sigma_fn=sigma_fn,
-        #     t_min=t_mins_bg,
-        #     near_plane=self.near_plane_bg,
-        #     far_plane=self.far_plane_bg,
-        #     render_step_size=self.render_step_size_bg,
-        #     stratified=self.training,
-        #     cone_angle=0.004,
-        #     alpha_thre=0.01,
-        # )
-
-        # ray_indices = ray_indices.long()
-        # t_origins = rays_o[ray_indices]
-        # t_dirs = rays_d[ray_indices]
-        # midpoints = ((t_starts + t_ends) / 2.0)[..., None]  # Nx1
-        # positions = t_origins + t_dirs * midpoints
-        # intervals = t_ends - t_starts
-
-        # density, feature = self.geometry_bg(positions)
-        # rgb = self.texture_bg(feature, t_dirs)
-
-        # weights, _, _ = render_weight_from_density(
-        #     t_starts, t_ends, density, ray_indices=ray_indices, n_rays=n_rays
-        # )
-        # opacity = accumulate_along_rays(
-        #     weights, values=None, ray_indices=ray_indices, n_rays=n_rays
-        # )
-        # depth = accumulate_along_rays(
-        #     weights, values=midpoints, ray_indices=ray_indices, n_rays=n_rays
-        # )
-        # comp_rgb = accumulate_along_rays(
-        #     weights, values=rgb, ray_indices=ray_indices, n_rays=n_rays
-        # )
-
         out = {
             "comp_rgb": rgb,
             "opacity": opacity,
@@ -309,16 +216,6 @@ class NeuSModel(nn.Module):
                 [len(rays) * 48], dtype=torch.int32, device=rays.device
             ),
         }
-
-        # if self.training:
-        #     out.update(
-        #         {
-        #             "weights": weights.view(-1),
-        #             "points": midpoints.view(-1),
-        #             "intervals": intervals.view(-1),
-        #             "ray_indices": ray_indices.view(-1),
-        #         }
-        #     )
 
         return out
 
@@ -440,9 +337,7 @@ class NeuSModel(nn.Module):
             out.update({"sdf_laplace_samples": sdf_laplace})
 
         out_bg = self.forward_bg_(rays)
-        # print(
-        #     f'n_rays: {n_rays}, fg samples: {out["num_samples"].item()}, bg samples: {out_bg["num_samples"].item()}'
-        # )
+
         out_full = {
             "comp_rgb": out["comp_rgb"] + out_bg["comp_rgb"] * (1.0 - out["opacity"]),
             "num_samples": out["num_samples"] + out_bg["num_samples"],

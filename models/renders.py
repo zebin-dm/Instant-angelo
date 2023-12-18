@@ -67,16 +67,6 @@ def render_image_with_propnet(
         rgb_sigma_fn=rgb_sigma_fn,
         render_bkgd=render_bkgd,
     )
-    # chunk_results = [rgb, opacity, depth]
-    # results.append(chunk_results)
-
-    # colors, opacities, depths = collate(
-    #     results,
-    #     collate_fn_map={
-    #         **default_collate_fn_map,
-    #         torch.Tensor: lambda x, **_: torch.cat(x, 0),
-    #     },
-    # )
 
     sampler.estimator.update_every_n_steps(
         extras["trans"], proposal_requires_grad, loss_scaler=1024
