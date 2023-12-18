@@ -1,67 +1,46 @@
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from loguru import logger
 
 import models
-from models.base import BaseModel
-from models.utils import chunk_batch
-from systems.utils import update_module_step
+from models.utils import chunk_batch, ContractionType
+from utils.utils import update_module_step
 from nerfacc import (
-    ContractionType,
-    OccupancyGrid,
-    ray_marching,
-    render_weight_from_density,
+    OccGridEstimator,
     render_weight_from_alpha,
     accumulate_along_rays,
+    ray_aabb_intersect,
 )
-from nerfacc.intersection import ray_aabb_intersect
+from nerfacc.estimators.prop_net import get_proposal_requires_grad_fn
+from models.points_sampler import PropPointSampler
+from models.renders import render_image_with_propnet
 
 
 class VarianceNetwork(nn.Module):
     def __init__(self, config):
-        super(VarianceNetwork, self).__init__()
+        super().__init__()
         self.config = config
-        self.init_val = self.config.init_val
         self.register_parameter(
             "variance", nn.Parameter(torch.tensor(self.config.init_val))
         )
-        self.modulate = self.config.get("modulate", False)
-        if self.modulate:
-            self.mod_start_steps = self.config.mod_start_steps
-            self.reach_max_steps = self.config.reach_max_steps
-            self.max_inv_s = self.config.max_inv_s
 
     @property
     def inv_s(self):
         val = torch.exp(self.variance * 10.0)
-        if self.modulate and self.do_mod:
-            val = val.clamp_max(self.mod_val)
         return val
 
     def forward(self, x):
-        return torch.ones([len(x), 1], device=self.variance.device) * self.inv_s
-
-    def update_step(self, epoch, global_step):
-        if self.modulate:
-            self.do_mod = global_step > self.mod_start_steps
-            if not self.do_mod:
-                self.prev_inv_s = self.inv_s.item()
-            else:
-                self.mod_val = min(
-                    (global_step / self.reach_max_steps)
-                    * (self.max_inv_s - self.prev_inv_s)
-                    + self.prev_inv_s,
-                    self.max_inv_s,
-                )
+        return (torch.ones_like(x) * self.inv_s).clip(1e-6, 1e6)
 
 
 @models.register("neus")
-class NeuSModel(BaseModel):
-    def setup(self):
-        # object
+class NeuSModel(nn.Module):
+    def __init__(self, config, device):
+        super().__init__()
+        self.cfg_global = config
+        self.config = config.model
+        self.device = device
         self.geometry = models.make(self.config.geometry.name, self.config.geometry)
         self.texture = models.make(self.config.texture.name, self.config.texture)
         self.geometry.contraction_type = ContractionType.AABB
@@ -74,86 +53,75 @@ class NeuSModel(BaseModel):
         )
         self.geometry_bg.contraction_type = ContractionType.UN_BOUNDED_SPHERE
         self.near_plane_bg, self.far_plane_bg = 0.1, 1e3
-        self.cone_angle_bg = (
-            10 ** (math.log10(self.far_plane_bg) / self.config.num_samples_per_ray_bg)
-            - 1.0
-        )
-        self.render_step_size_bg = 0.01
 
         self.variance = VarianceNetwork(self.config.variance)
+        radius = self.config.radius
+        aabb = [-radius, -radius, -radius, radius, radius, radius]
         self.register_buffer(
             "scene_aabb",
-            torch.as_tensor(
-                [
-                    -self.config.radius,
-                    -self.config.radius,
-                    -self.config.radius,
-                    self.config.radius,
-                    self.config.radius,
-                    self.config.radius,
-                ],
-                dtype=torch.float32,
-            ),
+            torch.as_tensor(aabb, dtype=torch.float32, device=self.device),
         )
-        if self.config.grid_prune:
-            self.occupancy_grid = OccupancyGrid(
-                roi_aabb=self.scene_aabb,
-                resolution=128,
-                contraction_type=ContractionType.AABB,
-            )
+        self.estimator = OccGridEstimator(
+            roi_aabb=self.scene_aabb, resolution=128, levels=1
+        )
 
-            self.occupancy_grid_bg = OccupancyGrid(
-                roi_aabb=self.scene_aabb,
-                resolution=256,
-                contraction_type=ContractionType.UN_BOUNDED_SPHERE,
-            )
-        self.randomized = self.config.randomized
-        self.render_step_size = (
-            1.732 * 2 * self.config.radius / self.config.num_samples_per_ray
+        self.estimator_bg = PropPointSampler(
+            aabb=self.scene_aabb,
+            unbounded=True,
+            max_steps=self.cfg_global.trainer.max_steps,
+            device=self.device,
         )
+        self.render_step_size = 0.005
+        self.render_step_size_bg = 0.02
+        print(f"self.render_step_size: {self.render_step_size}")
+        self.current_epoch = None
+        self.global_step = None
+        self.proposal_requires_grad_fn = get_proposal_requires_grad_fn()
+
+    def to_device(self, device):
+        self.to(device)
+        self.estimator.to(device)
+
+    def set_train(self):
+        self.train().float()
+        self.estimator.train()
+        self.estimator_bg.train()
+
+    def set_eval(self):
+        self.eval().float()
+        self.estimator.eval()
+        self.estimator_bg.eval()
 
     def update_step(self, epoch, global_step):
+        self.current_epoch = epoch
+        self.global_step = global_step
         update_module_step(self.geometry, epoch, global_step)
         update_module_step(self.texture, epoch, global_step)
 
         update_module_step(self.geometry_bg, epoch, global_step)
         update_module_step(self.texture_bg, epoch, global_step)
 
-        update_module_step(self.variance, epoch, global_step)
-
-        cos_anneal_end = self.config.get("cos_anneal_end", 0)
-        self.cos_anneal_ratio = (
-            1.0 if cos_anneal_end == 0 else min(1.0, global_step / cos_anneal_end)
-        )
+        cos_anneal_end = self.cfg_global.trainer.max_steps
+        self.cos_anneal_ratio = min(1.0, global_step / cos_anneal_end)
 
         def occ_eval_fn(x):
-            sdf = self.geometry(x, with_grad=False, with_feature=False)
-            inv_s = self.variance(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6)
-            inv_s = inv_s.expand(sdf.shape[0], 1)
-            estimated_next_sdf = sdf[..., None] - self.render_step_size * 0.5
-            estimated_prev_sdf = sdf[..., None] + self.render_step_size * 0.5
+            sdf = self.geometry(x, with_grad=False, with_feature=False)  # N
+            sdf = sdf[..., None]  # Nx1
+            inv_s = self.variance(sdf)
+            estimated_next_sdf = sdf - self.render_step_size * 0.5
+            estimated_prev_sdf = sdf + self.render_step_size * 0.5
             prev_cdf = torch.sigmoid(estimated_prev_sdf * inv_s)
             next_cdf = torch.sigmoid(estimated_next_sdf * inv_s)
             p = prev_cdf - next_cdf
             c = prev_cdf
-            alpha = ((p + 1e-5) / (c + 1e-5)).view(-1, 1).clip(0.0, 1.0)
+            alpha = ((p + 1e-5) / (c + 1e-5)).clip(0.0, 1.0)
             return alpha
 
-        def occ_eval_fn_bg(x):
-            density, _ = self.geometry_bg(x)
-            # approximate for 1 - torch.exp(-density[...,None] * self.render_step_size_bg) based on taylor series
-            return density[..., None] * self.render_step_size_bg
-
-        if self.training and self.config.grid_prune:
-            self.occupancy_grid.every_n_step(
+        if self.training:
+            self.estimator.update_every_n_steps(
                 step=global_step,
                 occ_eval_fn=occ_eval_fn,
-                occ_thre=self.config.get("grid_prune_occ_thre", 0.01),
-            )
-            self.occupancy_grid_bg.every_n_step(
-                step=global_step,
-                occ_eval_fn=occ_eval_fn_bg,
-                occ_thre=self.config.get("grid_prune_occ_thre_bg", 0.01),
+                occ_thre=self.config.get("grid_prune_occ_thre", 0.001),
             )
 
     def isosurface(self):
@@ -161,11 +129,8 @@ class NeuSModel(BaseModel):
         return mesh
 
     def get_alpha(self, sdf, normal, dirs, dists):
-        inv_s = self.variance(torch.zeros([1, 3]))[:, :1].clip(
-            1e-6, 1e6
-        )  # Single parameter
-        inv_s = inv_s.expand(sdf.shape[0], 1)
-
+        sdf = sdf[..., None]
+        inv_s = self.variance(sdf)
         true_cos = (dirs * normal).sum(-1, keepdim=True)
 
         # "cos_anneal_ratio" grows from 0 to 1 in the beginning training iterations. The anneal strategy below makes
@@ -176,8 +141,8 @@ class NeuSModel(BaseModel):
         )  # always non-positive
 
         # Estimate signed distances at section points
-        estimated_next_sdf = sdf[..., None] + iter_cos * dists.reshape(-1, 1) * 0.5
-        estimated_prev_sdf = sdf[..., None] - iter_cos * dists.reshape(-1, 1) * 0.5
+        estimated_next_sdf = sdf + iter_cos * dists * 0.5
+        estimated_prev_sdf = sdf - iter_cos * dists * 0.5
 
         prev_cdf = torch.sigmoid(estimated_prev_sdf * inv_s)
         next_cdf = torch.sigmoid(estimated_next_sdf * inv_s)
@@ -185,83 +150,42 @@ class NeuSModel(BaseModel):
         p = prev_cdf - next_cdf
         c = prev_cdf
 
-        alpha = ((p + 1e-5) / (c + 1e-5)).view(-1).clip(0.0, 1.0)
+        alpha = ((p + 1e-5) / (c + 1e-5)).clip(0.0, 1.0)
         return alpha
 
     def forward_bg_(self, rays):
-        n_rays = rays.shape[0]
         rays_o, rays_d = rays[:, 0:3], rays[:, 3:6]  # both (N_rays, 3)
 
-        def sigma_fn(t_starts, t_ends, ray_indices):
-            ray_indices = ray_indices.long()
-            t_origins = rays_o[ray_indices]
-            t_dirs = rays_d[ray_indices]
-            positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
-            density, _ = self.geometry_bg(positions)
-            return density[..., None]
+        def radiance_field(position, direction):
+            density, feature = self.geometry_bg(position)
+            rgb = self.texture_bg(feature, direction)
+            return rgb, density
 
-        _, t_max = ray_aabb_intersect(rays_o, rays_d, self.scene_aabb)
-        # if the ray intersects with the bounding box, start from the farther intersection point
-        # otherwise start from self.far_plane_bg
-        # note that in nerfacc t_max is set to 1e10 if there is no intersection
-        near_plane = torch.where(t_max > 1e9, self.near_plane_bg, t_max)
-        with torch.no_grad():
-            ray_indices, t_starts, t_ends = ray_marching(
-                rays_o,
-                rays_d,
-                scene_aabb=None,
-                grid=self.occupancy_grid_bg if self.config.grid_prune else None,
-                sigma_fn=sigma_fn,
-                near_plane=near_plane,
-                far_plane=self.far_plane_bg,
-                render_step_size=self.render_step_size_bg,
-                stratified=self.randomized,
-                cone_angle=self.cone_angle_bg,
-                alpha_thre=0.0,
-            )
-
-        ray_indices = ray_indices.long()
-        t_origins = rays_o[ray_indices]
-        t_dirs = rays_d[ray_indices]
-        midpoints = (t_starts + t_ends) / 2.0
-        positions = t_origins + t_dirs * midpoints
-        intervals = t_ends - t_starts
-
-        density, feature = self.geometry_bg(positions)
-        rgb = self.texture_bg(feature, t_dirs)
-
-        weights = render_weight_from_density(
-            t_starts, t_ends, density[..., None], ray_indices=ray_indices, n_rays=n_rays
+        _, t_maxs, hits = ray_aabb_intersect(
+            rays_o, rays_d, self.scene_aabb.view(-1, 6)
         )
-        opacity = accumulate_along_rays(
-            weights, ray_indices, values=None, n_rays=n_rays
+        proposal_requires_grad = self.proposal_requires_grad_fn(self.global_step)
+        rgb, opacity, depth, extras = render_image_with_propnet(
+            radiance_field,
+            sampler=self.estimator_bg,
+            rays=rays,
+            num_samples=48,
+            near_plane=t_maxs,
+            far_plane=torch.ones_like(t_maxs) * self.far_plane_bg,
+            sampling_type="lindisp",
+            opaque_bkgd=True,
+            proposal_requires_grad=proposal_requires_grad,
+            training=self.training,
         )
-        depth = accumulate_along_rays(
-            weights, ray_indices, values=midpoints, n_rays=n_rays
-        )
-        comp_rgb = accumulate_along_rays(
-            weights, ray_indices, values=rgb, n_rays=n_rays
-        )
-
         out = {
-            "comp_rgb": comp_rgb,
+            "comp_rgb": rgb,
             "opacity": opacity,
             "depth": depth,
             "rays_valid": opacity > 0,
             "num_samples": torch.as_tensor(
-                [len(t_starts)], dtype=torch.int32, device=rays.device
+                [len(rays) * 48], dtype=torch.int32, device=rays.device
             ),
         }
-
-        if self.training:
-            out.update(
-                {
-                    "weights": weights.view(-1),
-                    "points": midpoints.view(-1),
-                    "intervals": intervals.view(-1),
-                    "ray_indices": ray_indices.view(-1),
-                }
-            )
 
         return out
 
@@ -269,24 +193,39 @@ class NeuSModel(BaseModel):
         n_rays = rays.shape[0]
         rays_o, rays_d = rays[:, 0:3], rays[:, 3:6]  # both (N_rays, 3)
 
-        with torch.no_grad():
-            ray_indices, t_starts, t_ends = ray_marching(
-                rays_o,
-                rays_d,
-                scene_aabb=self.scene_aabb,
-                grid=self.occupancy_grid if self.config.grid_prune else None,
-                alpha_fn=None,
-                near_plane=None,
-                far_plane=None,
-                render_step_size=self.render_step_size,
-                stratified=self.randomized,
-                cone_angle=0.0,
-                alpha_thre=0.0,
-            )
+        def alpha_fn(t_starts, t_ends, ray_indices):
+            t_starts, t_ends = t_starts[..., None], t_ends[..., None]
+            t_origins = rays_o[ray_indices]
+            t_positions = (t_starts + t_ends) / 2.0
+            t_dirs = rays_d[ray_indices]
+            positions = t_origins + t_dirs * t_positions
+            sdf = self.geometry(positions, with_grad=False, with_feature=False)
+            inv_std = self.variance(sdf)
+            estimated_next_sdf = sdf - self.render_step_size * 0.5
+            estimated_prev_sdf = sdf + self.render_step_size * 0.5
+            prev_cdf = torch.sigmoid(estimated_prev_sdf * inv_std)
+            next_cdf = torch.sigmoid(estimated_next_sdf * inv_std)
+            p = prev_cdf - next_cdf
+            c = prev_cdf
+            alpha = ((p + 1e-5) / (c + 1e-5)).clip(0.0, 1.0)
+            return alpha
 
-        ray_indices = ray_indices.long()
+        ray_indices, t_starts, t_ends = self.estimator.sampling(
+            rays_o=rays_o,
+            rays_d=rays_d,
+            alpha_fn=alpha_fn,
+            near_plane=0.0,
+            far_plane=1e10,
+            render_step_size=self.render_step_size,
+            stratified=self.training,
+            cone_angle=0.0,
+            alpha_thre=0.0,
+        )
+
         t_origins = rays_o[ray_indices]
         t_dirs = rays_d[ray_indices]
+        t_starts = t_starts[..., None]  # Nx1
+        t_ends = t_ends[..., None]  # Nx1
         midpoints = (t_starts + t_ends) / 2.0
         positions = t_origins + t_dirs * midpoints
         dists = t_ends - t_starts
@@ -295,25 +234,24 @@ class NeuSModel(BaseModel):
             positions, with_grad=True, with_feature=True, with_laplace=True
         )
 
-        normal = F.normalize(sdf_grad, p=2, dim=-1)
-        alpha = self.get_alpha(sdf, normal, t_dirs, dists)[..., None]
+        normal = F.normalize(sdf_grad, p=2, dim=-1)  # N x 3
+        alpha = self.get_alpha(sdf, normal, t_dirs, dists)  # N x 1
         rgb = self.texture(feature, t_dirs, normal)
-
-        weights = render_weight_from_alpha(
-            alpha, ray_indices=ray_indices, n_rays=n_rays
+        weights, _ = render_weight_from_alpha(
+            alpha[..., 0], ray_indices=ray_indices, n_rays=n_rays
         )
         opacity = accumulate_along_rays(
-            weights, ray_indices, values=None, n_rays=n_rays
+            weights, values=None, ray_indices=ray_indices, n_rays=n_rays
         )
         depth = accumulate_along_rays(
-            weights, ray_indices, values=midpoints, n_rays=n_rays
+            weights, values=midpoints, ray_indices=ray_indices, n_rays=n_rays
         )
         comp_rgb = accumulate_along_rays(
-            weights, ray_indices, values=rgb, n_rays=n_rays
+            weights, values=rgb, ray_indices=ray_indices, n_rays=n_rays
         )
 
         comp_normal = accumulate_along_rays(
-            weights, ray_indices, values=normal, n_rays=n_rays
+            weights, values=normal, ray_indices=ray_indices, n_rays=n_rays
         )
         comp_normal = F.normalize(comp_normal, p=2, dim=-1)
 
@@ -331,15 +269,10 @@ class NeuSModel(BaseModel):
         if self.training:
             out.update(
                 {
-                    "sdf_samples": sdf,
+                    "sdf_laplace_samples": sdf_laplace,
                     "sdf_grad_samples": sdf_grad,
-                    "weights": weights.view(-1),
-                    "points": midpoints.view(-1),
-                    "intervals": dists.view(-1),
-                    "ray_indices": ray_indices.view(-1),
                 }
             )
-            out.update({"sdf_laplace_samples": sdf_laplace})
 
         out_bg = self.forward_bg_(rays)
 
@@ -361,14 +294,6 @@ class NeuSModel(BaseModel):
         else:
             out = chunk_batch(self.forward_, self.config.ray_chunk, True, rays)
         return {**out, "inv_s": self.variance.inv_s}
-
-    def train(self, mode=True):
-        self.randomized = mode and self.config.randomized
-        return super().train(mode=mode)
-
-    def eval(self):
-        self.randomized = False
-        return super().eval()
 
     def regularizations(self, out):
         losses = {}
@@ -392,130 +317,4 @@ class NeuSModel(BaseModel):
             base_color = torch.sigmoid(features[..., 1:4])
             mesh["v_rgb"] = base_color.cpu()
             mesh["v_norm"] = normal.cpu()
-        return mesh
-
-
-@models.register("sh-neus")
-class SphericalHarmonicNeuSModel(NeuSModel):
-    def forward_(self, rays):
-        n_rays = rays.shape[0]
-        rays_o, rays_d = rays[:, 0:3], rays[:, 3:6]  # both (N_rays, 3)
-
-        with torch.no_grad():
-            ray_indices, t_starts, t_ends = ray_marching(
-                rays_o,
-                rays_d,
-                scene_aabb=self.scene_aabb,
-                grid=self.occupancy_grid if self.config.grid_prune else None,
-                alpha_fn=None,
-                near_plane=None,
-                far_plane=None,
-                render_step_size=self.render_step_size,
-                stratified=self.randomized,
-                cone_angle=0.0,
-                alpha_thre=0.0,
-            )
-
-        ray_indices = ray_indices.long()
-        t_origins = rays_o[ray_indices]
-        t_dirs = rays_d[ray_indices]
-        midpoints = (t_starts + t_ends) / 2.0
-        positions = t_origins + t_dirs * midpoints
-        dists = t_ends - t_starts
-
-        sdf, sdf_grad, feature, sdf_laplace, auxiliary_feature = self.geometry(
-            positions,
-            with_grad=True,
-            with_feature=True,
-            with_laplace=True,
-            with_auxiliary_feature=True,
-        )
-        normal = F.normalize(sdf_grad, p=2, dim=-1)
-        alpha = self.get_alpha(sdf, normal, t_dirs, dists)[..., None]
-        rgb, sh_coeff = self.texture(feature, t_dirs, normal)
-        auxiliary_sh_coeff = self.texture.get_sh_coeff(auxiliary_feature, normal)
-
-        weights = render_weight_from_alpha(
-            alpha, ray_indices=ray_indices, n_rays=n_rays
-        )
-        opacity = accumulate_along_rays(
-            weights, ray_indices, values=None, n_rays=n_rays
-        )
-        depth = accumulate_along_rays(
-            weights, ray_indices, values=midpoints, n_rays=n_rays
-        )
-        comp_rgb = accumulate_along_rays(
-            weights, ray_indices, values=rgb, n_rays=n_rays
-        )
-
-        comp_normal = accumulate_along_rays(
-            weights, ray_indices, values=normal, n_rays=n_rays
-        )
-        comp_normal = F.normalize(comp_normal, p=2, dim=-1)
-
-        out = {
-            "comp_rgb": comp_rgb,
-            "comp_normal": comp_normal,
-            "opacity": opacity,
-            "depth": depth,
-            "rays_valid": opacity > 0,
-            "num_samples": torch.as_tensor(
-                [len(t_starts)], dtype=torch.int32, device=rays.device
-            ),
-        }
-
-        if self.training:
-            out.update(
-                {
-                    "sdf_samples": sdf,
-                    "sdf_grad_samples": sdf_grad,
-                    "weights": weights.view(-1),
-                    "points": midpoints.view(-1),
-                    "intervals": dists.view(-1),
-                    "ray_indices": ray_indices.view(-1),
-                    "sh_coeff": sh_coeff,
-                    "auxiliary_sh_coeff": auxiliary_sh_coeff,
-                }
-            )
-            out.update({"sdf_laplace_samples": sdf_laplace})
-
-        out_bg = self.forward_bg_(rays)
-
-        out_full = {
-            "comp_rgb": out["comp_rgb"] + out_bg["comp_rgb"] * (1.0 - out["opacity"]),
-            "num_samples": out["num_samples"] + out_bg["num_samples"],
-            "rays_valid": out["rays_valid"] | out_bg["rays_valid"],
-        }
-
-        return {
-            **out,
-            **{k + "_bg": v for k, v in out_bg.items()},
-            **{k + "_full": v for k, v in out_full.items()},
-        }
-
-    def regularizations(self, out):
-        losses = {}
-        losses["sh_mse"] = F.mse_loss(out["sh_coeff"], out["auxiliary_sh_coeff"])
-        losses.update(self.geometry.regularizations(out))
-        losses.update(self.texture.regularizations(out))
-        return losses
-
-    @torch.no_grad()
-    def export(self, export_config):
-        mesh = self.isosurface()
-        if export_config.export_vertex_color:
-            _, sdf_grad, feature = chunk_batch(
-                self.geometry,
-                export_config.chunk_size,
-                False,
-                mesh["v_pos"].to(self.rank),
-                with_grad=True,
-                with_feature=True,
-            )
-            normal = F.normalize(sdf_grad, p=2, dim=-1)
-            sh_coeff = self.texture.get_sh_coeff(
-                feature, normal
-            )  # set the viewing directions to the normal to get "albedo"
-            base_color = sh_coeff[..., :3] * 0.28209479177387814 + 0.5
-            mesh["v_rgb"] = base_color.cpu()
         return mesh

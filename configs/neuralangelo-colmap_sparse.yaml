@@ -19,16 +19,15 @@ model:
   train_num_rays: 256
   max_train_num_rays: 8192
   grid_prune: true
-  grid_prune_occ_thre: 0.001
+  grid_prune_occ_thre: 0.01
   dynamic_ray_sampling: true
   batch_image_sampling: true
   randomized: true
   ray_chunk: 2048
-  cos_anneal_end: 20000
+  cos_anneal_end: 20000  # TODO： modify to 16000
   background_color: random
   variance:
     init_val: 0.3
-    modulate: false
   geometry:
     name: volume-sdf
     radius: ${model.radius}
@@ -74,7 +73,7 @@ model:
       n_hidden_layers: 2
     color_activation: sigmoid
   # background model configurations
-  num_samples_per_ray_bg: 64
+  num_samples_per_ray_bg: 128
   geometry_bg:
     name: volume-density
     radius: ${model.radius}
@@ -165,9 +164,4 @@ export:
 trainer:
   max_steps: 16000
   log_every_n_steps: 1000
-  num_sanity_val_steps: 0
   val_check_interval: 20000
-  limit_train_batches: 1.0
-  limit_val_batches: 1
-  enable_progress_bar: true
-  16-mixed: 16

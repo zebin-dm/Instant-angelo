@@ -24,54 +24,42 @@ class NeuSSystem(BaseSystem):
     def forward(self, batch):
         return self.model(batch["rays"])
 
-    def preprocess_data(self, batch, stage):
+    def preprocess_data(self, batch, stage, dataset):
         if stage in ["test"]:
             index = batch["index"]
         else:
+            ray_size = (self.train_num_rays,)
+            device = self.device
+            all_images = dataset.all_images
             if self.config.model.batch_image_sampling:
                 index = torch.randint(
-                    0,
-                    len(self.dataset.all_images),
-                    size=(self.train_num_rays,),
-                    device=self.device,
+                    0, len(dataset.all_images), size=ray_size, device=device
                 )
-                x = torch.randint(
-                    0,
-                    self.dataset.w,
-                    size=(self.train_num_rays,),
-                    device=self.device,
-                )
-                y = torch.randint(
-                    0,
-                    self.dataset.h,
-                    size=(self.train_num_rays,),
-                    device=self.device,
-                )
+                x = torch.randint(0, dataset.w, size=ray_size, device=device)
+                y = torch.randint(0, dataset.h, size=ray_size, device=device)
             else:
-                index = torch.randint(0, len(self.dataset.all_images), size=(1,))
-                x = torch.randint(0, self.dataset.w, size=(self.train_num_rays,))
-                y = torch.randint(0, self.dataset.h, size=(self.train_num_rays,))
+                index = torch.randint(0, len(all_images), size=(1,))
+                x = torch.randint(0, dataset.w, size=ray_size)
+                y = torch.randint(0, dataset.h, size=ray_size)
 
         if stage in ["train"]:
-            c2w = self.dataset.all_c2w[index]
-            if self.dataset.directions.ndim == 3:  # (H, W, 3)
-                directions = self.dataset.directions[y, x]
-            elif self.dataset.directions.ndim == 4:  # (N, H, W, 3)
-                directions = self.dataset.directions[index, y, x]
+            c2w = dataset.all_c2w[index]
+            all_dirs = dataset.directions
+            if all_dirs.ndim == 3:  # (H, W, 3)
+                directions = all_dirs[y, x]
+            elif all_dirs.ndim == 4:  # (N, H, W, 3)
+                directions = all_dirs[index, y, x]
             rays_o, rays_d = get_rays(directions, c2w)
-            rgb = self.dataset.all_images[index, y, x].view(
-                -1, self.dataset.all_images.shape[-1]
-            )
+            rgb = all_images[index, y, x].view(-1, all_images.shape[-1])
         else:
-            c2w = self.dataset.all_c2w[index][0]
-            if self.dataset.directions.ndim == 3:  # (H, W, 3)
-                directions = self.dataset.directions
-            elif self.dataset.directions.ndim == 4:  # (N, H, W, 3)
-                directions = self.dataset.directions[index][0]
+            c2w = dataset.all_c2w[index][0]
+            if all_dirs.ndim == 3:  # (H, W, 3)
+                directions = all_dirs
+            elif all_dirs.ndim == 4:  # (N, H, W, 3)
+                directions = all_dirs[index][0]
             rays_o, rays_d = get_rays(directions, c2w)
-            rgb = self.dataset.all_images[index].view(
-                -1, self.dataset.all_images.shape[-1]
-            )
+            rgb = all_images[index].view(-1, all_images.shape[-1])
+            batch.update({"imshape": dataset.img_wh})
 
         rays = torch.cat([rays_o, F.normalize(rays_d, p=2, dim=-1)], dim=-1)
         batch.update({"rays": rays, "rgb": rgb})
@@ -79,16 +67,17 @@ class NeuSSystem(BaseSystem):
     def training_step(self, batch, batch_idx):
         out = self.forward(batch)
         loss = 0.0
+
         # update train_num_rays
-        if self.config.model.dynamic_ray_sampling:
-            train_num_rays = int(
-                self.train_num_rays
-                * (self.train_num_samples / out["num_samples_full"].sum().item())
-            )
-            self.train_num_rays = min(
-                int(self.train_num_rays * 0.9 + train_num_rays * 0.1),
-                self.config.model.max_train_num_rays,
-            )
+        # if self.config.model.dynamic_ray_sampling:
+        #     train_num_rays = int(
+        #         self.train_num_rays
+        #         * (self.train_num_samples / out["num_samples_full"].sum().item())
+        #     )
+        #     self.train_num_rays = min(
+        #         int(self.train_num_rays * 0.9 + train_num_rays * 0.1),
+        #         self.config.model.max_train_num_rays,
+        #     )
 
         loss_rgb_mse = F.mse_loss(
             out["comp_rgb_full"][out["rays_valid_full"][..., 0]],
@@ -124,6 +113,10 @@ class NeuSSystem(BaseSystem):
                 self.add_scalar(f"train_params/{name}", self.C(value))
 
         self.add_scalar("train/num_rays", float(self.train_num_rays))
+        self.add_scalar(
+            "train/num_samples", float(out["num_samples_full"].sum().item())
+        )
+        # print(f"train/num_samples: {float(out['num_samples_full'].sum().item())}")
 
         return {"loss": loss}
 
@@ -132,7 +125,7 @@ class NeuSSystem(BaseSystem):
         psnr = self.criterions["psnr"](
             out["comp_rgb_full"].to(batch["rgb"]), batch["rgb"]
         )
-        W, H = self.dataset.img_wh
+        W, H = batch["imshape"]
         self.save_image_grid(
             f"it{self.global_step}-test/{batch['index'][0].item()}.png",
             [

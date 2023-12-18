@@ -1,5 +1,4 @@
-omegaconf==2.2.3
-nerfacc==0.3.3
+omegaconf
 matplotlib
 opencv-python
 imageio

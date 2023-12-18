@@ -17,7 +17,7 @@ from datasets.colmap_utils import (
 )
 from models.ray_utils import get_ray_directions
 from models.utils import scale_anything
-from nerfacc import ContractionType
+from models.utils import ContractionType
 
 
 def get_center(pts):

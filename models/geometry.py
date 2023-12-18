@@ -9,8 +9,8 @@ import models
 from models.base import BaseModel
 from models.utils import scale_anything, get_activation, cleanup
 from models.network_utils import get_encoding, get_mlp, get_encoding_with_network
-from systems.utils import update_module_step
-from nerfacc import ContractionType
+from utils.utils import update_module_step
+from models.utils import ContractionType
 from loguru import logger
 
 import trimesh

@@ -100,12 +100,13 @@ RUN git clone https://github.com/lzhnb/CuMCubes.git && \
     cd  .. && \
     rm -r CuMCubes
 
+RUN pip install nerfacc -f https://nerfacc-bucket.s3.us-west-2.amazonaws.com/whl/torch-2.0.0_cu118.html
+
 RUN pip install \
-    nerfacc==0.3.5 \
     Pillow==9.5.0 \
     trimesh \
     natsort \
-    omegaconf==2.2.3 \
+    omegaconf \
     matplotlib \
     opencv-python \
     imageio \

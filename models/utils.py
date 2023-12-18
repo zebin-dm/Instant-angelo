@@ -11,6 +11,11 @@ import numpy as np
 import tinycudann as tcnn
 
 
+class ContractionType:
+    AABB = 1
+    UN_BOUNDED_SPHERE = 2
+
+
 def chunk_batch(func, chunk_size, move_to_cpu, *args, **kwargs):
     B = None
     for arg in args:
@@ -20,7 +25,13 @@ def chunk_batch(func, chunk_size, move_to_cpu, *args, **kwargs):
     out = defaultdict(list)
     out_type = None
     for i in range(0, B, chunk_size):
-        out_chunk = func(*[arg[i:i+chunk_size] if isinstance(arg, torch.Tensor) else arg for arg in args], **kwargs)
+        out_chunk = func(
+            *[
+                arg[i : i + chunk_size] if isinstance(arg, torch.Tensor) else arg
+                for arg in args
+            ],
+            **kwargs,
+        )
         if out_chunk is None:
             continue
         out_type = type(out_chunk)
@@ -32,13 +43,15 @@ def chunk_batch(func, chunk_size, move_to_cpu, *args, **kwargs):
         elif isinstance(out_chunk, dict):
             pass
         else:
-            print(f'Return value of func must be in type [torch.Tensor, list, tuple, dict], get {type(out_chunk)}.')
+            print(
+                f"Return value of func must be in type [torch.Tensor, list, tuple, dict], get {type(out_chunk)}."
+            )
             exit(1)
         for k, v in out_chunk.items():
             v = v if torch.is_grad_enabled() else v.detach()
             v = v.cpu() if move_to_cpu else v
             out[k].append(v)
-    
+
     if out_type is None:
         return
 
@@ -66,6 +79,7 @@ class _TruncExp(Function):  # pylint: disable=abstract-method
         x = ctx.saved_tensors[0]
         return g * torch.exp(torch.clamp(x, max=15))
 
+
 trunc_exp = _TruncExp.apply
 
 
@@ -73,33 +87,37 @@ def get_activation(name):
     if name is None:
         return lambda x: x
     name = name.lower()
-    if name == 'none':
+    if name == "none":
         return lambda x: x
-    elif name.startswith('scale'):
+    elif name.startswith("scale"):
         scale_factor = float(name[5:])
-        return lambda x: x.clamp(0., scale_factor) / scale_factor
-    elif name.startswith('clamp'):
+        return lambda x: x.clamp(0.0, scale_factor) / scale_factor
+    elif name.startswith("clamp"):
         clamp_max = float(name[5:])
-        return lambda x: x.clamp(0., clamp_max)
-    elif name.startswith('mul'):
+        return lambda x: x.clamp(0.0, clamp_max)
+    elif name.startswith("mul"):
         mul_factor = float(name[3:])
         return lambda x: x * mul_factor
-    elif name == 'lin2srgb':
-        return lambda x: torch.where(x > 0.0031308, torch.pow(torch.clamp(x, min=0.0031308), 1.0/2.4)*1.055 - 0.055, 12.92*x).clamp(0., 1.)
-    elif name == 'trunc_exp':
+    elif name == "lin2srgb":
+        return lambda x: torch.where(
+            x > 0.0031308,
+            torch.pow(torch.clamp(x, min=0.0031308), 1.0 / 2.4) * 1.055 - 0.055,
+            12.92 * x,
+        ).clamp(0.0, 1.0)
+    elif name == "trunc_exp":
         return trunc_exp
-    elif name.startswith('+') or name.startswith('-'):
+    elif name.startswith("+") or name.startswith("-"):
         return lambda x: x + float(name)
-    elif name == 'sigmoid':
+    elif name == "sigmoid":
         return lambda x: torch.sigmoid(x)
-    elif name == 'tanh':
+    elif name == "tanh":
         return lambda x: torch.tanh(x)
     else:
         return getattr(F, name)
 
 
 def dot(x, y):
-    return torch.sum(x*y, -1, keepdim=True)
+    return torch.sum(x * y, -1, keepdim=True)
 
 
 def reflect(x, n):
@@ -109,7 +127,7 @@ def reflect(x, n):
 def scale_anything(dat, inp_scale, tgt_scale):
     if inp_scale is None:
         inp_scale = [dat.min(), dat.max()]
-    dat = (dat  - inp_scale[0]) / (inp_scale[1] - inp_scale[0])
+    dat = (dat - inp_scale[0]) / (inp_scale[1] - inp_scale[0])
     dat = dat * (tgt_scale[1] - tgt_scale[0]) + tgt_scale[0]
     return dat
 
@@ -135,8 +153,9 @@ def reflect(viewdirs, normals):
     Returns:
       [..., 3] array of reflection directions.
     """
-    return 2.0 * torch.sum(
-        normals * viewdirs, dim=-1, keepdims=True) * normals - viewdirs
+    return (
+        2.0 * torch.sum(normals * viewdirs, dim=-1, keepdims=True) * normals - viewdirs
+    )
 
 
 def l2_normalize(x, eps=torch.finfo(torch.float32).eps):
@@ -147,11 +166,18 @@ def l2_normalize(x, eps=torch.finfo(torch.float32).eps):
 
 def compute_weighted_mae(weights, normals, normals_gt):
     """Compute weighted mean angular error, assuming normals are unit length."""
-    one_eps = torch.tensor(1 - torch.finfo(torch.float32).eps,
-                           device=weights.device)
-    return (weights * torch.arccos(
-        torch.clip((normals * normals_gt).sum(-1), -one_eps,
-                   one_eps))).sum() / weights.sum() * 180.0 / torch.pi
+    one_eps = torch.tensor(1 - torch.finfo(torch.float32).eps, device=weights.device)
+    return (
+        (
+            weights
+            * torch.arccos(
+                torch.clip((normals * normals_gt).sum(-1), -one_eps, one_eps)
+            )
+        ).sum()
+        / weights.sum()
+        * 180.0
+        / torch.pi
+    )
 
 
 def compute_weighted_normal_loss(weights, normals, normals_gt):
@@ -180,16 +206,23 @@ def assoc_legendre_coeff(l, m, k):
     Returns:
       A float, the coefficient of the term corresponding to the inputs.
     """
-    return ((-1)**m * 2**l * np.math.factorial(l) / np.math.factorial(k) /
-            np.math.factorial(l - k - m) *
-            generalized_binomial_coeff(0.5 * (l + k + m - 1.0), l))
+    return (
+        (-1) ** m
+        * 2**l
+        * np.math.factorial(l)
+        / np.math.factorial(k)
+        / np.math.factorial(l - k - m)
+        * generalized_binomial_coeff(0.5 * (l + k + m - 1.0), l)
+    )
 
 
 def sph_harm_coeff(l, m, k):
     """Compute spherical harmonic coefficients."""
-    return (np.sqrt(
-        (2.0 * l + 1.0) * np.math.factorial(l - m) /
-        (4.0 * np.pi * np.math.factorial(l + m))) * assoc_legendre_coeff(l, m, k))
+    return np.sqrt(
+        (2.0 * l + 1.0)
+        * np.math.factorial(l - m)
+        / (4.0 * np.pi * np.math.factorial(l + m))
+    ) * assoc_legendre_coeff(l, m, k)
 
 
 def get_ml_array(deg_view):
@@ -222,11 +255,11 @@ def generate_ide_fn(deg_view):
       ValueError: if deg_view is larger than 5.
     """
     if deg_view > 5:
-        print('WARNING: Only deg_view of at most 5 is numerically stable.')
+        print("WARNING: Only deg_view of at most 5 is numerically stable.")
     #   raise ValueError('Only deg_view of at most 5 is numerically stable.')
 
     ml_array = get_ml_array(deg_view)
-    l_max = 2**(deg_view - 1)
+    l_max = 2 ** (deg_view - 1)
 
     # Create a matrix corresponding to ml_array holding all coefficients, which,
     # when multiplied (from the right) by the z coordinate Vandermonde matrix,
@@ -255,8 +288,7 @@ def generate_ide_fn(deg_view):
         vmz = torch.cat([z**i for i in range(mat.shape[0])], dim=-1)
 
         # Compute x+iy Vandermonde matrix.
-        vmxy = torch.cat(
-            [(x + 1j * y)**m for m in ml_array[0, :]], dim=-1)
+        vmxy = torch.cat([(x + 1j * y) ** m for m in ml_array[0, :]], dim=-1)
 
         # Get spherical harmonics.
         sph_harms = vmxy * torch.matmul(vmz, mat.to(vmz.device))
@@ -264,7 +296,8 @@ def generate_ide_fn(deg_view):
         # Apply attenuation function using the von Mises-Fisher distribution
         # concentration parameter, kappa.
         sigma = torch.tensor(
-            0.5 * ml_array[1, :] * (ml_array[1, :] + 1), dtype=torch.float32)
+            0.5 * ml_array[1, :] * (ml_array[1, :] + 1), dtype=torch.float32
+        )
         ide = sph_harms * torch.exp(-sigma.to(kappa_inv.device) * kappa_inv)
 
         # Split into real and imaginary parts and return

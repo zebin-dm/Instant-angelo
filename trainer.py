@@ -1,18 +1,18 @@
 import torch
 import datasets
 import argparse
-import systems
 from pydlutils.torch import seed
 from loguru import logger
 from datetime import datetime
 from utils.misc import load_config
 from torch.utils.tensorboard import SummaryWriter
+from systems.neus import NeuSSystem
 
 
 class Trainer:
     def __init__(self, config):
         self.cfg = config.trainer
-        self.config = config
+        self.cfg_global = config
         self.device = torch.device("cuda")
         self.writer = SummaryWriter(f"{config.exp_dir}/{config.trial_name}")
         self.global_step = 0
@@ -20,7 +20,7 @@ class Trainer:
     def test(self, system, datamodule):
         logger.info("Testing .....")
         dataloader = datamodule.test_dataloader()
-        system.model.eval()
+        system.model.set_eval()
         for bidx, batch in enumerate(dataloader):
             system.on_test_batch_start(batch, dataloader.dataset)
             system.test_step(batch, bidx)
@@ -29,23 +29,27 @@ class Trainer:
     def export(self, system):
         logger.info("Exporting mesh ...")
         torch.cuda.empty_cache()
-        system.model.eval()
+        system.model.set_eval()
         system.export()
 
-    def train(self, system, datamodule, ckpt_path):
+    def train(self):
         max_epoch = self.cfg.get("max_epoch", 1)
         cfg = self.cfg
-        system.setup(self.writer, self.device)
+        cfg_g = self.cfg_global
+        system = NeuSSystem(cfg_g, self.device)
+        system.setup(self.writer)
+        datamodule = datasets.make(cfg_g.dataset.name, cfg_g.dataset)
         datamodule.setup(stage=None, device=self.device)
         optimizer, scheduler = system.configure_optimizers()
         for epoch in range(max_epoch):
             dataloader = datamodule.train_dataloader()
-            system.model.train().float()
+            system.model.set_train()
             optimizer.zero_grad()
             for batch_idx, batch in enumerate(dataloader):
-                system.update_status(epoch, self.global_step)
-                system.on_train_batch_start(batch, dataloader.dataset)
-                loss = system.training_step(batch, batch_idx)
+                system.on_train_batch_start(
+                    batch, dataloader.dataset, epoch=epoch, global_step=self.global_step
+                )
+                loss = system.training_step(batch, self.global_step)
                 loss["loss"].backward()
                 optimizer.step()
                 scheduler.step()
@@ -80,14 +84,8 @@ def main():
     config.exp_dir = f"{args.exp_dir}/{config.name}"
     config.save_dir = f"{config.exp_dir}/{config.trial_name}/save"
     seed.set_seed(config.seed)
-    dm = datasets.make(config.dataset.name, config.dataset)
-    system = systems.make(
-        config.system.name,
-        config,
-        load_from_checkpoint=args.resume,
-    )
     trainer = Trainer(config)
-    trainer.train(system, dm, ckpt_path=args.resume)
+    trainer.train()
 
 
 if __name__ == "__main__":
