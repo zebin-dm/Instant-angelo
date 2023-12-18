@@ -4,7 +4,7 @@ import torch.nn as nn
 import models
 from models.utils import get_activation, generate_ide_fn
 from models.network_utils import get_encoding, get_mlp
-from systems.utils import update_module_step
+from utils.utils import update_module_step
 from loguru import logger
 
 

@@ -6,7 +6,7 @@ from loguru import logger
 
 from utils.misc import config_to_primitive, get_rank
 from models.utils import get_activation
-from systems.utils import update_module_step
+from utils.utils import update_module_step
 
 
 class VanillaFrequency(nn.Module):

@@ -7,6 +7,7 @@ from loguru import logger
 from datetime import datetime
 from utils.misc import load_config
 from torch.utils.tensorboard import SummaryWriter
+from systems.neus import NeuSSystem
 
 
 class Trainer:
@@ -35,7 +36,7 @@ class Trainer:
     def train(self, system, datamodule, ckpt_path):
         max_epoch = self.cfg.get("max_epoch", 1)
         cfg = self.cfg
-        system.setup(self.writer, self.device)
+        system.setup(self.writer)
         datamodule.setup(stage=None, device=self.device)
         optimizer, scheduler = system.configure_optimizers()
         for epoch in range(max_epoch):
@@ -45,7 +46,7 @@ class Trainer:
             for batch_idx, batch in enumerate(dataloader):
                 system.update_status(epoch, self.global_step)
                 system.on_train_batch_start(batch, dataloader.dataset)
-                loss = system.training_step(batch, batch_idx)
+                loss = system.training_step(batch, self.global_step)
                 loss["loss"].backward()
                 optimizer.step()
                 scheduler.step()
@@ -81,11 +82,13 @@ def main():
     config.save_dir = f"{config.exp_dir}/{config.trial_name}/save"
     seed.set_seed(config.seed)
     dm = datasets.make(config.dataset.name, config.dataset)
-    system = systems.make(
-        config.system.name,
-        config,
-        load_from_checkpoint=args.resume,
-    )
+    device = torch.device("cuda")
+    # system = systems.make(
+    #     config.system.name,
+    #     config,
+    #     load_from_checkpoint=args.resume,
+    # )
+    system = NeuSSystem(config, device=device)
     trainer = Trainer(config)
     trainer.train(system, dm, ckpt_path=args.resume)
 
