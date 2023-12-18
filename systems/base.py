@@ -20,11 +20,6 @@ class BaseSystem(SaverMixin):
         self.writer = writer
         self.model.to_device(self.device)
 
-    def update_status(self, current_epoch, global_step):
-        self.current_epoch = current_epoch
-        self.global_step = global_step
-        self.model.update_status(current_epoch, global_step)
-
     def add_scalar(self, tag, value):
         if self.global_step % 100 != 0 and tag.startswith("train"):
             return
@@ -65,15 +60,15 @@ class BaseSystem(SaverMixin):
         raise NotImplementedError
 
     @torch.inference_mode()
-    def on_train_batch_start(self, batch, dataset):
-        self.dataset = dataset
-        self.preprocess_data(batch, "train")
+    def on_train_batch_start(self, batch, dataset, epoch, global_step):
+        self.current_epoch = epoch
+        self.global_step = global_step
+        self.preprocess_data(batch, "train", dataset)
         update_module_step(self.model, self.current_epoch, self.global_step)
 
     @torch.inference_mode()
     def on_test_batch_start(self, batch, dataset):
-        self.dataset = dataset
-        self.preprocess_data(batch, "test")
+        self.preprocess_data(batch, "test", dataset)
 
     def training_step(self, batch, batch_idx):
         raise NotImplementedError

@@ -1,7 +1,7 @@
 import torch
-from typing import Sequence, Optional, Literal
+from typing import Optional, Literal
 from models.points_sampler import PropPointSampler
-from nerfacc.volrend import rendering
+from nerfacc import rendering
 from loguru import logger
 
 
@@ -45,7 +45,6 @@ def render_image_with_propnet(
             sigmas[..., -1, :] = torch.inf
         return rgb, sigmas.squeeze(-1)
 
-    # results = []
     t_starts, t_ends = sampler.estimator.sampling(
         prop_sigma_fns=[
             lambda *args: prop_sigma_fn(*args, p) for p in sampler.proposal_networks

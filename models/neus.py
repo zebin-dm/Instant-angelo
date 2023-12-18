@@ -19,9 +19,8 @@ from models.renders import render_image_with_propnet
 
 class VarianceNetwork(nn.Module):
     def __init__(self, config):
-        super(VarianceNetwork, self).__init__()
+        super().__init__()
         self.config = config
-        self.init_val = self.config.init_val
         self.register_parameter(
             "variance", nn.Parameter(torch.tensor(self.config.init_val))
         )
@@ -72,14 +71,6 @@ class NeuSModel(nn.Module):
             max_steps=self.cfg_global.trainer.max_steps,
             device=self.device,
         )
-        self.randomized = self.config.randomized
-        # self.render_step_size = (
-        #     1.732 * 2 * self.config.radius / self.config.num_samples_per_ray
-        # )
-        # self.render_step_size = 0.005
-        # self.render_step_size = (
-        #     (self.scene_aabb[3:] - self.scene_aabb[:3]) ** 2
-        # ).sum().sqrt().item() / 1000
         self.render_step_size = 0.005
         self.render_step_size_bg = 0.02
         print(f"self.render_step_size: {self.render_step_size}")
@@ -101,11 +92,9 @@ class NeuSModel(nn.Module):
         self.estimator.eval()
         self.estimator_bg.eval()
 
-    def update_status(self, current_epoch, global_step):
-        self.current_epoch = current_epoch
-        self.global_step = global_step
-
     def update_step(self, epoch, global_step):
+        self.current_epoch = epoch
+        self.global_step = global_step
         update_module_step(self.geometry, epoch, global_step)
         update_module_step(self.texture, epoch, global_step)
 
@@ -221,23 +210,7 @@ class NeuSModel(nn.Module):
             p = prev_cdf - next_cdf
             c = prev_cdf
             alpha = ((p + 1e-5) / (c + 1e-5)).clip(0.0, 1.0)
-
             return alpha
-
-            # with torch.no_grad():
-            #     ray_indices, t_starts, t_ends = ray_marching(
-            #         rays_o,
-            #         rays_d,
-            #         scene_aabb=self.scene_aabb,
-            #         grid=self.occupancy_grid if self.config.grid_prune else None,
-            #         alpha_fn=None,
-            #         near_plane=None,
-            #         far_plane=None,
-            #         render_step_size=self.render_step_size,
-            #         stratified=self.randomized,
-            #         cone_angle=0.0,
-            #         alpha_thre=0.0,
-            #     )
 
         ray_indices, t_starts, t_ends = self.estimator.sampling(
             rays_o=rays_o,
@@ -251,17 +224,6 @@ class NeuSModel(nn.Module):
             alpha_thre=0.0,
         )
 
-        # def validate_empty_rays(ray_indices, t_start, t_end):
-        #     if ray_indices.nelement() == 0:
-        #         logger.warning("Empty rays_indices!")
-        #         ray_indices = torch.LongTensor([0]).to(ray_indices)
-        #         t_start = torch.Tensor([0]).to(ray_indices)
-        #         t_end = torch.Tensor([0]).to(ray_indices)
-        #     return ray_indices, t_start, t_end
-
-        # ray_indices, t_starts, t_ends = validate_empty_rays(
-        #     ray_indices, t_starts, t_ends
-        # )
         t_origins = rays_o[ray_indices]
         t_dirs = rays_d[ray_indices]
         t_starts = t_starts[..., None]  # Nx1
@@ -309,15 +271,10 @@ class NeuSModel(nn.Module):
         if self.training:
             out.update(
                 {
-                    "sdf_samples": sdf,
+                    "sdf_laplace_samples": sdf_laplace,
                     "sdf_grad_samples": sdf_grad,
-                    "weights": weights,
-                    "points": midpoints.view(-1),
-                    "intervals": dists.view(-1),
-                    "ray_indices": ray_indices,
                 }
             )
-            out.update({"sdf_laplace_samples": sdf_laplace})
 
         out_bg = self.forward_bg_(rays)
 
@@ -339,14 +296,6 @@ class NeuSModel(nn.Module):
         else:
             out = chunk_batch(self.forward_, self.config.ray_chunk, True, rays)
         return {**out, "inv_s": self.variance.inv_s}
-
-    def train(self, mode=True):
-        self.randomized = mode and self.config.randomized
-        return super().train(mode=mode)
-
-    def eval(self):
-        self.randomized = False
-        return super().eval()
 
     def regularizations(self, out):
         losses = {}
