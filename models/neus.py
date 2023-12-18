@@ -1,4 +1,3 @@
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,7 +39,8 @@ class VarianceNetwork(nn.Module):
 class NeuSModel(nn.Module):
     def __init__(self, config, device):
         super().__init__()
-        self.config = config
+        self.cfg_global = config
+        self.config = config.model
         self.device = device
         self.geometry = models.make(self.config.geometry.name, self.config.geometry)
         self.texture = models.make(self.config.texture.name, self.config.texture)
@@ -54,38 +54,22 @@ class NeuSModel(nn.Module):
         )
         self.geometry_bg.contraction_type = ContractionType.UN_BOUNDED_SPHERE
         self.near_plane_bg, self.far_plane_bg = 0.1, 1e3
-        self.cone_angle_bg = (
-            10 ** (math.log10(self.far_plane_bg) / self.config.num_samples_per_ray_bg)
-            - 1.0
-        )
-        logger.info(f"===============> self.cone_angle_bg : {self.cone_angle_bg}")
-        # self.render_step_size_bg = 0.01
 
         self.variance = VarianceNetwork(self.config.variance)
         radius = self.config.radius
+        aabb = [-radius, -radius, -radius, radius, radius, radius]
         self.register_buffer(
             "scene_aabb",
-            torch.as_tensor(
-                [
-                    -radius,
-                    -radius,
-                    -radius,
-                    radius,
-                    radius,
-                    radius,
-                ],
-                dtype=torch.float32,
-            ),
+            torch.as_tensor(aabb, dtype=torch.float32, device=self.device),
         )
         self.estimator = OccGridEstimator(
             roi_aabb=self.scene_aabb, resolution=128, levels=1
         )
-        # TODO, remove the paramter
-        max_steps = 1600
+
         self.estimator_bg = PropPointSampler(
             aabb=self.scene_aabb,
             unbounded=True,
-            max_steps=max_steps,
+            max_steps=self.cfg_global.trainer.max_steps,
             device=self.device,
         )
         self.randomized = self.config.randomized
@@ -183,7 +167,6 @@ class NeuSModel(nn.Module):
         return alpha
 
     def forward_bg_(self, rays):
-        n_rays = rays.shape[0]
         rays_o, rays_d = rays[:, 0:3], rays[:, 3:6]  # both (N_rays, 3)
 
         def radiance_field(position, direction):

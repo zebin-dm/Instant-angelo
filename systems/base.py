@@ -1,4 +1,3 @@
-import models
 import torch
 from systems.utils import parse_optimizer, parse_scheduler
 from utils.utils import update_module_step
@@ -15,7 +14,7 @@ class BaseSystem(SaverMixin):
         self.prepare()
         self.writer: SummaryWriter = None
         self.device = device
-        self.model = NeuSModel(self.config.model, self.device)
+        self.model = NeuSModel(self.config, self.device)
 
     def setup(self, writer):
         self.writer = writer
@@ -75,7 +74,6 @@ class BaseSystem(SaverMixin):
     def on_test_batch_start(self, batch, dataset):
         self.dataset = dataset
         self.preprocess_data(batch, "test")
-        # update_module_step(self.model, self.current_epoch, self.global_step)
 
     def training_step(self, batch, batch_idx):
         raise NotImplementedError
