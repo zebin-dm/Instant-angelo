@@ -101,10 +101,8 @@ class NeuSModel(nn.Module):
         update_module_step(self.geometry_bg, epoch, global_step)
         update_module_step(self.texture_bg, epoch, global_step)
 
-        cos_anneal_end = self.config.get("cos_anneal_end", 0)
-        self.cos_anneal_ratio = (
-            1.0 if cos_anneal_end == 0 else min(1.0, global_step / cos_anneal_end)
-        )
+        cos_anneal_end = self.cfg_global.trainer.max_steps
+        self.cos_anneal_ratio = min(1.0, global_step / cos_anneal_end)
 
         def occ_eval_fn(x):
             sdf = self.geometry(x, with_grad=False, with_feature=False)  # N
